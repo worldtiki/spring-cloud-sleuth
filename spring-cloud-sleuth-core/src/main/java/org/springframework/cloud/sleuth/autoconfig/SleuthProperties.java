@@ -16,9 +16,6 @@
 
 package org.springframework.cloud.sleuth.autoconfig;
 
-import java.util.ArrayList;
-import java.util.List;
-
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 /**
@@ -28,7 +25,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * @since 1.0.11
  */
 @ConfigurationProperties("spring.sleuth")
-public class SleuthProperties {
+class SleuthProperties {
 
 	private boolean enabled = true;
 
@@ -40,35 +37,6 @@ public class SleuthProperties {
 	 * server.
 	 */
 	private boolean supportsJoin = true;
-
-	/**
-	 * List of baggage key names that should be propagated out of process. These keys will
-	 * be prefixed with `baggage` before the actual key. This property is set in order to
-	 * be backward compatible with previous Sleuth versions.
-	 *
-	 * @see brave.propagation.ExtraFieldPropagation.FactoryBuilder#addPrefixedFields(String,
-	 * java.util.Collection)
-	 */
-	private List<String> baggageKeys = new ArrayList<>();
-
-	/**
-	 * List of fields that are referenced the same in-process as it is on the wire. For
-	 * example, the name "x-vcap-request-id" would be set as-is including the prefix.
-	 *
-	 * <p>
-	 * Note: {@code fieldName} will be implicitly lower-cased.
-	 *
-	 * @see brave.propagation.ExtraFieldPropagation.FactoryBuilder#addField(String)
-	 */
-	private List<String> propagationKeys = new ArrayList<>();
-
-	/**
-	 * Same as {@link #propagationKeys} except that this field is not propagated to remote
-	 * services.
-	 *
-	 * @see brave.propagation.ExtraFieldPropagation.FactoryBuilder#addRedactedField(String)
-	 */
-	private List<String> localKeys = new ArrayList<>();
 
 	public boolean isEnabled() {
 		return this.enabled;
@@ -92,30 +60,6 @@ public class SleuthProperties {
 
 	public void setSupportsJoin(boolean supportsJoin) {
 		this.supportsJoin = supportsJoin;
-	}
-
-	public List<String> getBaggageKeys() {
-		return this.baggageKeys;
-	}
-
-	public void setBaggageKeys(List<String> baggageKeys) {
-		this.baggageKeys = baggageKeys;
-	}
-
-	public List<String> getPropagationKeys() {
-		return this.propagationKeys;
-	}
-
-	public void setPropagationKeys(List<String> propagationKeys) {
-		this.propagationKeys = propagationKeys;
-	}
-
-	public List<String> getLocalKeys() {
-		return this.localKeys;
-	}
-
-	public void setLocalKeys(List<String> localKeys) {
-		this.localKeys = localKeys;
 	}
 
 }

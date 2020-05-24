@@ -28,8 +28,8 @@ import org.apache.commons.logging.LogFactory;
 
 import org.springframework.beans.factory.BeanFactory;
 import org.springframework.beans.factory.NoSuchBeanDefinitionException;
-import org.springframework.cloud.sleuth.DefaultSpanNamer;
 import org.springframework.cloud.sleuth.SpanNamer;
+import org.springframework.cloud.sleuth.internal.DefaultSpanNamer;
 import org.springframework.core.task.TaskDecorator;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import org.springframework.util.concurrent.ListenableFuture;
@@ -41,6 +41,7 @@ import org.springframework.util.concurrent.ListenableFuture;
  * @since 1.0.10
  */
 @SuppressWarnings("serial")
+// public as most types in this package were documented for use
 public class LazyTraceThreadPoolTaskExecutor extends ThreadPoolTaskExecutor {
 
 	private static final Log log = LogFactory
@@ -62,39 +63,39 @@ public class LazyTraceThreadPoolTaskExecutor extends ThreadPoolTaskExecutor {
 
 	@Override
 	public void execute(Runnable task) {
-		this.delegate.execute(ContextUtil.isContextInCreation(this.beanFactory) ? task
+		this.delegate.execute(ContextUtil.isContextUnusable(this.beanFactory) ? task
 				: new TraceRunnable(tracing(), spanNamer(), task));
 	}
 
 	@Override
 	public void execute(Runnable task, long startTimeout) {
-		this.delegate.execute(ContextUtil.isContextInCreation(this.beanFactory) ? task
+		this.delegate.execute(ContextUtil.isContextUnusable(this.beanFactory) ? task
 				: new TraceRunnable(tracing(), spanNamer(), task), startTimeout);
 	}
 
 	@Override
 	public Future<?> submit(Runnable task) {
-		return this.delegate.submit(ContextUtil.isContextInCreation(this.beanFactory)
-				? task : new TraceRunnable(tracing(), spanNamer(), task));
+		return this.delegate.submit(ContextUtil.isContextUnusable(this.beanFactory) ? task
+				: new TraceRunnable(tracing(), spanNamer(), task));
 	}
 
 	@Override
 	public <T> Future<T> submit(Callable<T> task) {
-		return this.delegate.submit(ContextUtil.isContextInCreation(this.beanFactory)
-				? task : new TraceCallable<>(tracing(), spanNamer(), task));
+		return this.delegate.submit(ContextUtil.isContextUnusable(this.beanFactory) ? task
+				: new TraceCallable<>(tracing(), spanNamer(), task));
 	}
 
 	@Override
 	public ListenableFuture<?> submitListenable(Runnable task) {
 		return this.delegate
-				.submitListenable(ContextUtil.isContextInCreation(this.beanFactory) ? task
+				.submitListenable(ContextUtil.isContextUnusable(this.beanFactory) ? task
 						: new TraceRunnable(tracing(), spanNamer(), task));
 	}
 
 	@Override
 	public <T> ListenableFuture<T> submitListenable(Callable<T> task) {
 		return this.delegate
-				.submitListenable(ContextUtil.isContextInCreation(this.beanFactory) ? task
+				.submitListenable(ContextUtil.isContextUnusable(this.beanFactory) ? task
 						: new TraceCallable<>(tracing(), spanNamer(), task));
 	}
 

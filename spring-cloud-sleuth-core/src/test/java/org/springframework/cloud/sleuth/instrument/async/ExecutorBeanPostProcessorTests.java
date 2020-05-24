@@ -33,14 +33,15 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import brave.Tracing;
 import org.aopalliance.aop.Advice;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
-import org.junit.runner.RunWith;
+import org.assertj.core.api.BDDAssertions;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.BDDMockito;
 import org.mockito.Mock;
 import org.mockito.Mockito;
-import org.mockito.junit.MockitoJUnitRunner;
+import org.mockito.junit.jupiter.MockitoExtension;
 
 import org.springframework.aop.framework.AopConfigException;
 import org.springframework.aop.framework.ProxyFactoryBean;
@@ -59,24 +60,24 @@ import static org.assertj.core.api.BDDAssertions.thenThrownBy;
  * @author Denys Ivano
  * @author Vladislav Fefelov
  */
-@RunWith(MockitoJUnitRunner.class)
+@ExtendWith(MockitoExtension.class)
 public class ExecutorBeanPostProcessorTests {
 
-	@Mock
+	@Mock(lenient = true)
 	BeanFactory beanFactory;
 
 	Tracing tracing = Tracing.newBuilder().build();
 
 	private SleuthAsyncProperties sleuthAsyncProperties;
 
-	@Before
+	@BeforeEach
 	public void setup() {
 		this.sleuthAsyncProperties = new SleuthAsyncProperties();
 		Mockito.when(this.beanFactory.getBean(SleuthAsyncProperties.class))
 				.thenReturn(this.sleuthAsyncProperties);
 	}
 
-	@After
+	@AfterEach
 	public void clear() {
 		this.tracing.close();
 	}
@@ -427,6 +428,35 @@ public class ExecutorBeanPostProcessorTests {
 		then(AopUtils.isCglibProxy(o)).isTrue();
 		thenThrownBy(() -> ((RejectedExecutionExecutor) o).execute(() -> {
 		})).isInstanceOf(RejectedExecutionException.class).hasMessage("rejected");
+	}
+
+	// #1463
+	@Test
+	public void should_not_double_instrument_traced_executors() throws Exception {
+		LazyTraceThreadPoolTaskExecutor lazyTraceThreadPoolTaskExecutor = BDDMockito
+				.mock(LazyTraceThreadPoolTaskExecutor.class);
+		Object o = new ExecutorBeanPostProcessor(this.beanFactory)
+				.postProcessAfterInitialization(lazyTraceThreadPoolTaskExecutor,
+						"executor");
+		BDDAssertions.then(o).isSameAs(lazyTraceThreadPoolTaskExecutor);
+
+		TraceableExecutorService traceableExecutorService = BDDMockito
+				.mock(TraceableExecutorService.class);
+		o = new ExecutorBeanPostProcessor(this.beanFactory)
+				.postProcessAfterInitialization(traceableExecutorService, "executor");
+		BDDAssertions.then(o).isSameAs(traceableExecutorService);
+
+		LazyTraceAsyncTaskExecutor lazyTraceAsyncTaskExecutor = BDDMockito
+				.mock(LazyTraceAsyncTaskExecutor.class);
+		o = new ExecutorBeanPostProcessor(this.beanFactory)
+				.postProcessAfterInitialization(lazyTraceAsyncTaskExecutor, "executor");
+		BDDAssertions.then(o).isSameAs(lazyTraceAsyncTaskExecutor);
+
+		LazyTraceExecutor lazyTraceExecutor = BDDMockito.mock(LazyTraceExecutor.class);
+		o = new ExecutorBeanPostProcessor(this.beanFactory)
+				.postProcessAfterInitialization(lazyTraceExecutor, "executor");
+		BDDAssertions.then(o).isSameAs(lazyTraceExecutor);
+
 	}
 
 	class Foo implements Executor {

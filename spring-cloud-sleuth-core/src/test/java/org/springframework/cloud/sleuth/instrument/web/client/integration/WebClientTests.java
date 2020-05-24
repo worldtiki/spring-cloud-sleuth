@@ -16,9 +16,6 @@
 
 package org.springframework.cloud.sleuth.instrument.web.client.integration;
 
-import java.time.Duration;
-import java.util.ArrayList;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -27,20 +24,23 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import javax.servlet.http.HttpServletRequest;
 
 import brave.Span;
 import brave.Tracer;
 import brave.Tracing;
+import brave.baggage.BaggagePropagation;
+import brave.handler.MutableSpan;
+import brave.handler.SpanHandler;
+import brave.propagation.B3Propagation;
+import brave.propagation.B3SingleFormat;
 import brave.propagation.SamplingFlags;
 import brave.propagation.TraceContextOrSamplingFlags;
 import brave.sampler.Sampler;
-import com.netflix.loadbalancer.BaseLoadBalancer;
-import com.netflix.loadbalancer.ILoadBalancer;
-import com.netflix.loadbalancer.Server;
-import junitparams.JUnitParamsRunner;
-import junitparams.Parameters;
+import brave.test.TestSpanHandler;
+import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.http.HttpResponse;
 import org.apache.http.client.methods.HttpGet;
@@ -50,17 +50,14 @@ import org.apache.http.impl.client.HttpClientBuilder;
 import org.apache.http.impl.nio.client.CloseableHttpAsyncClient;
 import org.apache.http.impl.nio.client.HttpAsyncClientBuilder;
 import org.awaitility.Awaitility;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.ClassRule;
-import org.junit.Ignore;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import reactor.netty.http.client.HttpClient;
-import reactor.netty.http.client.HttpClientResponse;
-import zipkin2.Annotation;
-import zipkin2.reporter.Reporter;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.reactivestreams.Subscription;
+import reactor.core.publisher.BaseSubscriber;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -75,50 +72,39 @@ import org.springframework.boot.web.servlet.error.ErrorAttributes;
 import org.springframework.cloud.client.loadbalancer.LoadBalanced;
 import org.springframework.cloud.gateway.config.GatewayAutoConfiguration;
 import org.springframework.cloud.gateway.config.GatewayClassPathWarningAutoConfiguration;
-import org.springframework.cloud.netflix.ribbon.RibbonClient;
+import org.springframework.cloud.loadbalancer.annotation.LoadBalancerClient;
+import org.springframework.cloud.loadbalancer.core.ServiceInstanceListSupplier;
 import org.springframework.cloud.openfeign.EnableFeignClients;
 import org.springframework.cloud.openfeign.FeignClient;
-import org.springframework.cloud.sleuth.instrument.web.TraceWebServletAutoConfiguration;
-import org.springframework.cloud.sleuth.util.ArrayListSpanReporter;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.env.Environment;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.TestPropertySource;
-import org.springframework.test.context.junit4.rules.SpringClassRule;
-import org.springframework.test.context.junit4.rules.SpringMethodRule;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestMethod;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestTemplate;
+import org.springframework.web.reactive.function.client.UnknownHttpStatusCodeException;
 import org.springframework.web.reactive.function.client.WebClient;
 
+import static brave.Span.Kind.CLIENT;
+import static brave.propagation.B3Propagation.Format.SINGLE_NO_PARENT;
 import static org.assertj.core.api.Assertions.fail;
 import static org.assertj.core.api.BDDAssertions.then;
 
-@RunWith(JUnitParamsRunner.class)
 @SpringBootTest(classes = WebClientTests.TestConfiguration.class,
 		webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
-@TestPropertySource(properties = { "spring.sleuth.http.legacy.enabled=true",
-		"spring.application.name=fooservice", "feign.hystrix.enabled=false" })
+@TestPropertySource(properties = { "spring.application.name=fooservice",
+		"spring.sleuth.web.client.skip-pattern=/skip.*" })
 @DirtiesContext
 public class WebClientTests {
 
-	@ClassRule
-	public static final SpringClassRule SCR = new SpringClassRule();
-	static final String TRACE_ID_NAME = "X-B3-TraceId";
-	static final String SPAN_ID_NAME = "X-B3-SpanId";
-	static final String SAMPLED_NAME = "X-B3-Sampled";
-	static final String PARENT_ID_NAME = "X-B3-ParentSpanId";
-
-	private static final org.apache.commons.logging.Log log = LogFactory
-			.getLog(WebClientTests.class);
-
-	@Rule
-	public final SpringMethodRule springMethodRule = new SpringMethodRule();
+	private static final Log log = LogFactory.getLog(WebClientTests.class);
 
 	@Autowired
 	TestFeignInterface testFeignInterface;
@@ -137,13 +123,10 @@ public class WebClientTests {
 	HttpClientBuilder httpClientBuilder; // #845
 
 	@Autowired
-	HttpClient nettyHttpClient;
-
-	@Autowired
 	HttpAsyncClientBuilder httpAsyncClientBuilder; // #845
 
 	@Autowired
-	ArrayListSpanReporter reporter;
+	TestSpanHandler spans;
 
 	@Autowired
 	Tracer tracer;
@@ -163,29 +146,26 @@ public class WebClientTests {
 	@Autowired
 	MyRestTemplateCustomizer customizer;
 
-	@After
-	@Before
+	@AfterEach
+	@BeforeEach
 	public void close() {
-		this.reporter.clear();
+		this.spans.clear();
 		this.testErrorController.clear();
 		this.fooController.clear();
 	}
 
-	@Test
-	@Parameters
+	@ParameterizedTest
+	@MethodSource("parametersForShouldCreateANewSpanWithClientSideTagsWhenNoPreviousTracingWasPresent")
 	@SuppressWarnings("unchecked")
 	public void shouldCreateANewSpanWithClientSideTagsWhenNoPreviousTracingWasPresent(
 			ResponseEntityProvider provider) {
 		ResponseEntity<String> response = provider.get(this);
 
 		Awaitility.await().atMost(2, TimeUnit.SECONDS).untilAsserted(() -> {
-			then(getHeader(response, TRACE_ID_NAME)).isNull();
-			then(getHeader(response, SPAN_ID_NAME)).isNull();
-			List<zipkin2.Span> spans = this.reporter.getSpans();
-			then(spans).isNotEmpty();
-			Optional<zipkin2.Span> noTraceSpan = new ArrayList<>(spans).stream()
-					.filter(span -> "http:/notrace".equals(span.name())
-							&& !span.tags().isEmpty()
+			then(getHeader(response, "b3")).isNull();
+			then(this.spans).isNotEmpty();
+			Optional<MutableSpan> noTraceSpan = this.spans.spans().stream()
+					.filter(span -> "GET".equals(span.name()) && !span.tags().isEmpty()
 							&& span.tags().containsKey("http.path"))
 					.findFirst();
 			then(noTraceSpan.isPresent()).isTrue();
@@ -193,13 +173,13 @@ public class WebClientTests {
 					.containsEntry("http.method", "GET");
 			// TODO: matches cause there is an issue with Feign not providing the full URL
 			// at the interceptor level
-			then(noTraceSpan.get().tags().get("http.url")).matches(".*/notrace");
+			then(noTraceSpan.get().tags().get("http.path")).matches(".*/notrace");
 		});
 		then(this.tracer.currentSpan()).isNull();
 	}
 
-	Object[] parametersForShouldCreateANewSpanWithClientSideTagsWhenNoPreviousTracingWasPresent() {
-		return new Object[] {
+	static Stream parametersForShouldCreateANewSpanWithClientSideTagsWhenNoPreviousTracingWasPresent() {
+		return Stream.of(
 				(ResponseEntityProvider) (tests) -> tests.testFeignInterface.getNoTrace(),
 				(ResponseEntityProvider) (tests) -> tests.testFeignInterface.getNoTrace(),
 				(ResponseEntityProvider) (tests) -> tests.testFeignInterface.getNoTrace(),
@@ -223,11 +203,11 @@ public class WebClientTests {
 				(ResponseEntityProvider) (tests) -> tests.template
 						.getForEntity("http://fooservice/notrace", String.class),
 				(ResponseEntityProvider) (tests) -> tests.template
-						.getForEntity("http://fooservice/notrace", String.class) };
+						.getForEntity("http://fooservice/notrace", String.class));
 	}
 
-	@Test
-	@Parameters
+	@ParameterizedTest
+	@MethodSource("parametersForShouldPropagateNotSamplingHeader")
 	@SuppressWarnings("unchecked")
 	public void shouldPropagateNotSamplingHeader(ResponseEntityProvider provider) {
 		Span span = this.tracer
@@ -237,26 +217,25 @@ public class WebClientTests {
 		try (Tracer.SpanInScope ws = this.tracer.withSpanInScope(span)) {
 			ResponseEntity<Map<String, String>> response = provider.get(this);
 
-			then(response.getBody().get(TRACE_ID_NAME.toLowerCase())).isNotNull();
-			then(response.getBody().get(SAMPLED_NAME.toLowerCase())).isEqualTo("0");
+			then(response.getBody().get("b3")).isNotNull().endsWith("-0"); // not sampled
 		}
 		finally {
 			span.finish();
 		}
 
-		then(this.reporter.getSpans()).isEmpty();
+		then(this.spans).isEmpty();
 		then(this.tracer.currentSpan()).isNull();
 	}
 
-	Object[] parametersForShouldPropagateNotSamplingHeader() throws Exception {
-		return new Object[] {
+	static Stream parametersForShouldPropagateNotSamplingHeader() throws Exception {
+		return Stream.of(
 				(ResponseEntityProvider) (tests) -> tests.testFeignInterface.headers(),
 				(ResponseEntityProvider) (tests) -> tests.template
-						.getForEntity("http://fooservice/", Map.class) };
+						.getForEntity("http://fooservice/", Map.class));
 	}
 
-	@Test
-	@Parameters
+	@ParameterizedTest
+	@MethodSource("parametersForShouldAttachTraceIdWhenCallingAnotherService")
 	@SuppressWarnings("unchecked")
 	public void shouldAttachTraceIdWhenCallingAnotherService(
 			ResponseEntityProvider provider) {
@@ -267,39 +246,14 @@ public class WebClientTests {
 
 			// https://github.com/spring-cloud/spring-cloud-sleuth/issues/327
 			// we don't want to respond with any tracing data
-			then(getHeader(response, SAMPLED_NAME)).isNull();
-			then(getHeader(response, TRACE_ID_NAME)).isNull();
+			then(getHeader(response, "b3")).isNull();
 		}
 		finally {
 			span.finish();
 		}
 
 		then(this.tracer.currentSpan()).isNull();
-		then(this.reporter.getSpans()).isNotEmpty();
-	}
-
-	@Test
-	@SuppressWarnings("unchecked")
-	public void shouldAttachTraceIdWhenCallingAnotherServiceForNettyHttpClient()
-			throws Exception {
-		Span span = this.tracer.nextSpan().name("foo").start();
-
-		try (Tracer.SpanInScope ws = this.tracer.withSpanInScope(span)) {
-			HttpClientResponse response = this.nettyHttpClient.get()
-					.uri("http://localhost:" + this.port).response().block();
-
-			then(response).isNotNull();
-		}
-
-		Awaitility.await().untilAsserted(() -> {
-			then(this.tracer.currentSpan()).isNull();
-			System.out.println("Collected span " + this.reporter.getSpans());
-			then(this.reporter.getSpans()).isNotEmpty()
-					.extracting("traceId", String.class)
-					// we can have some bizarre spans popping up
-					.contains(span.context().traceIdString());
-			then(this.reporter.getSpans()).extracting("kind.name").contains("CLIENT");
-		});
+		then(this.spans).isNotEmpty();
 	}
 
 	@Test
@@ -317,9 +271,9 @@ public class WebClientTests {
 		}
 
 		then(this.tracer.currentSpan()).isNull();
-		then(this.reporter.getSpans()).isNotEmpty().extracting("traceId", String.class)
+		then(this.spans).isNotEmpty().extracting("traceId", String.class)
 				.containsOnly(span.context().traceIdString());
-		then(this.reporter.getSpans()).extracting("kind.name").contains("CLIENT");
+		then(this.spans).extracting("kind.name").contains("CLIENT");
 	}
 
 	@Test
@@ -356,9 +310,9 @@ public class WebClientTests {
 		}
 
 		then(this.tracer.currentSpan()).isNull();
-		then(this.reporter.getSpans()).isNotEmpty().extracting("traceId", String.class)
+		then(this.spans).isNotEmpty().extracting("traceId", String.class)
 				.containsOnly(span.context().traceIdString());
-		then(this.reporter.getSpans()).extracting("kind.name").contains("CLIENT");
+		then(this.spans).extracting("kind.name").contains("CLIENT");
 	}
 
 	@Test
@@ -374,61 +328,68 @@ public class WebClientTests {
 			span.finish();
 		}
 		then(this.tracer.currentSpan()).isNull();
-		then(this.reporter.getSpans()).isNotEmpty().extracting("kind.name")
-				.contains("CLIENT");
-	}
-
-	@Test
-	@Ignore("Flakey on CI")
-	public void shouldReportTraceForCancelledRequestViaWebClient() {
-		Span span = this.tracer.nextSpan().name("foo").start();
-
-		try (Tracer.SpanInScope ws = this.tracer.withSpanInScope(span)) {
-			this.webClient.get().uri("http://localhost:" + this.port + "/noresponse")
-					.retrieve().bodyToMono(String.class).timeout(Duration.ofMillis(0))
-					.block();
-		}
-		catch (Exception e) {
-
-		}
-		finally {
-			span.finish();
-		}
-
-		Awaitility.await().untilAsserted(() -> {
-			System.out.println("Found spans " + this.reporter.getSpans());
-			final Optional<zipkin2.Span> clientSpan = this.reporter.getSpans().stream()
-					.filter(s -> s.kind() == zipkin2.Span.Kind.CLIENT).findFirst();
-			then(clientSpan).isPresent();
-			then(clientSpan.get().tags()).containsEntry("error", "CANCELLED");
-		});
+		then(this.spans).isNotEmpty().extracting("kind.name").contains("CLIENT");
 	}
 
 	@Test
 	@SuppressWarnings("unchecked")
-	public void shouldNotBreakWhenCustomStatusCodeIsSetViaWebClient() {
+	public void shouldWorkWhenCustomStatusCodeIsReturned() {
 		Span span = this.tracer.nextSpan().name("foo").start();
 
 		try (Tracer.SpanInScope ws = this.tracer.withSpanInScope(span)) {
-			this.webClient.get()
-					.uri("http://localhost:" + this.port + "/customstatuscode").exchange()
-					.block();
+			this.webClient.get().uri("http://localhost:" + this.port + "/issue1462")
+					.retrieve().bodyToMono(String.class).block();
+		}
+		catch (UnknownHttpStatusCodeException ex) {
+
 		}
 		finally {
 			span.finish();
 		}
+
 		then(this.tracer.currentSpan()).isNull();
+		then(this.spans).isNotEmpty().extracting("kind.name").contains("CLIENT");
 	}
 
-	Object[] parametersForShouldAttachTraceIdWhenCallingAnotherService() {
-		return new Object[] {
-				(ResponseEntityProvider) (tests) -> tests.testFeignInterface.headers(),
-				(ResponseEntityProvider) (tests) -> tests.template
-						.getForEntity("http://fooservice/traceid", String.class) };
+	/**
+	 * Cancel before {@link Subscription#request(long)} means a network request was never
+	 * sent
+	 */
+	@Test
+	@Disabled("flakey")
+	public void shouldNotTagOnCancel() {
+		this.webClient.get().uri("http://localhost:" + this.port + "/doNotSkip")
+				.retrieve().bodyToMono(String.class)
+				.subscribe(new BaseSubscriber<String>() {
+					@Override
+					protected void hookOnSubscribe(Subscription subscription) {
+						cancel();
+					}
+				});
+
+		then(this.spans).isEmpty();
 	}
 
 	@Test
-	@Parameters
+	public void shouldRespectSkipPattern() {
+		this.webClient.get().uri("http://localhost:" + this.port + "/skip").retrieve()
+				.bodyToMono(String.class).block();
+		then(this.spans).isEmpty();
+
+		this.webClient.get().uri("http://localhost:" + this.port + "/doNotSkip")
+				.retrieve().bodyToMono(String.class).block();
+		then(this.spans).isNotEmpty();
+	}
+
+	static Stream parametersForShouldAttachTraceIdWhenCallingAnotherService() {
+		return Stream.of(
+				(ResponseEntityProvider) (tests) -> tests.testFeignInterface.headers(),
+				(ResponseEntityProvider) (tests) -> tests.template
+						.getForEntity("http://fooservice/traceid", String.class));
+	}
+
+	@ParameterizedTest
+	@MethodSource("parametersForShouldAttachTraceIdWhenUsingFeignClientWithoutResponseBody")
 	public void shouldAttachTraceIdWhenUsingFeignClientWithoutResponseBody(
 			ResponseEntityProvider provider) {
 		Span span = this.tracer.nextSpan().name("foo").start();
@@ -441,15 +402,15 @@ public class WebClientTests {
 		}
 
 		then(this.tracer.currentSpan()).isNull();
-		then(this.reporter.getSpans()).isNotEmpty();
+		then(this.spans).isNotEmpty();
 	}
 
-	Object[] parametersForShouldAttachTraceIdWhenUsingFeignClientWithoutResponseBody() {
-		return new Object[] {
+	static Stream parametersForShouldAttachTraceIdWhenUsingFeignClientWithoutResponseBody() {
+		return Stream.of(
 				(ResponseEntityProvider) (tests) -> tests.testFeignInterface
 						.noResponseBody(),
 				(ResponseEntityProvider) (tests) -> tests.template
-						.getForEntity("http://fooservice/noresponse", String.class) };
+						.getForEntity("http://fooservice/noresponse", String.class));
 	}
 
 	@Test
@@ -462,22 +423,20 @@ public class WebClientTests {
 		}
 
 		then(this.tracer.currentSpan()).isNull();
-		Optional<zipkin2.Span> storedSpan = this.reporter.getSpans().stream()
+		Optional<MutableSpan> storedSpan = this.spans.spans().stream()
 				.filter(span -> "404".equals(span.tags().get("http.status_code")))
 				.findFirst();
 		then(storedSpan.isPresent()).isTrue();
-		List<zipkin2.Span> spans = this.reporter.getSpans();
-		spans.stream().forEach(span -> {
+		this.spans.spans().stream().forEach(span -> {
 			int initialSize = span.annotations().size();
-			int distinctSize = span.annotations().stream().map(Annotation::value)
+			int distinctSize = span.annotations().stream().map(Map.Entry::getValue)
 					.distinct().collect(Collectors.toList()).size();
 			log.info("logs " + span.annotations());
 			then(initialSize).as("there are no duplicate log entries")
 					.isEqualTo(distinctSize);
 		});
 
-		then(this.reporter.getSpans()).isNotEmpty().extracting("kind.name")
-				.contains("CLIENT");
+		then(this.spans).isNotEmpty().extracting("kind.name").contains("CLIENT");
 	}
 
 	@Test
@@ -503,7 +462,7 @@ public class WebClientTests {
 		}
 		then(this.tracer.currentSpan()).isNull();
 		then(this.customizer.isExecuted()).isTrue();
-		then(this.reporter.getSpans()).extracting("kind.name").contains("CLIENT");
+		then(this.spans).extracting("kind.name").contains("CLIENT");
 	}
 
 	@Test
@@ -513,7 +472,7 @@ public class WebClientTests {
 		AtomicReference<String> traceId = new AtomicReference<>();
 		try (Tracer.SpanInScope ws = this.tracer.withSpanInScope(span)) {
 			this.webClientBuilder.filter((request, exchange) -> {
-				traceId.set(request.headers().getFirst("X-B3-SpanId"));
+				traceId.set(request.headers().getFirst("b3"));
 
 				return exchange.exchange(request);
 			}).build().get().uri("http://localhost:" + this.port + "/traceid").retrieve()
@@ -556,17 +515,30 @@ public class WebClientTests {
 	}
 
 	@Configuration
-	@EnableAutoConfiguration(exclude = { TraceWebServletAutoConfiguration.class,
-			GatewayClassPathWarningAutoConfiguration.class,
-			GatewayAutoConfiguration.class })
+	@EnableAutoConfiguration(
+			excludeName = "org.springframework.cloud.sleuth.instrument.web.TraceWebServletAutoConfiguration",
+			exclude = { GatewayClassPathWarningAutoConfiguration.class,
+					GatewayAutoConfiguration.class })
 	@EnableFeignClients
-	@RibbonClient(value = "fooservice",
-			configuration = SimpleRibbonClientConfiguration.class)
+	@LoadBalancerClient(value = "fooservice",
+			configuration = SimpleLoadBalancerClientConfiguration.class)
 	public static class TestConfiguration {
+
+		@Bean
+		BaggagePropagation.FactoryBuilder baggagePropagationFactoryBuilder() {
+			// Use b3 single format as it is less verbose
+			return BaggagePropagation.newFactoryBuilder(B3Propagation.newFactoryBuilder()
+					.injectFormat(CLIENT, SINGLE_NO_PARENT).build());
+		}
 
 		@Bean
 		FooController fooController() {
 			return new FooController();
+		}
+
+		@Bean
+		WebClientController webClientController() {
+			return new WebClientController();
 		}
 
 		@LoadBalanced
@@ -587,8 +559,8 @@ public class WebClientTests {
 		}
 
 		@Bean
-		Reporter<zipkin2.Span> spanReporter() {
-			return new ArrayListSpanReporter();
+		SpanHandler testSpanHandler() {
+			return new TestSpanHandler();
 		}
 
 		@Bean
@@ -604,11 +576,6 @@ public class WebClientTests {
 		@Bean
 		RestTemplateCustomizer myRestTemplateCustomizer() {
 			return new MyRestTemplateCustomizer();
-		}
-
-		@Bean
-		HttpClient reactorHttpClient() {
-			return HttpClient.create();
 		}
 
 	}
@@ -658,27 +625,21 @@ public class WebClientTests {
 	@RestController
 	public static class FooController {
 
-		@Autowired
-		Tracer tracer;
-
 		Span span;
 
 		@RequestMapping(value = "/notrace", method = RequestMethod.GET)
 		public String notrace(
-				@RequestHeader(name = TRACE_ID_NAME, required = false) String traceId) {
-			then(traceId).isNotNull();
+				@RequestHeader(name = "b3", required = false) String b3Single) {
+			then(b3Single).isNotNull();
 			return "OK";
 		}
 
 		@RequestMapping(value = "/traceid", method = RequestMethod.GET)
-		public String traceId(@RequestHeader(TRACE_ID_NAME) String traceId,
-				@RequestHeader(SPAN_ID_NAME) String spanId,
-				@RequestHeader(PARENT_ID_NAME) String parentId) {
-			then(traceId).isNotEmpty();
-			then(parentId).isNotEmpty();
-			then(spanId).isNotEmpty();
-			this.span = this.tracer.currentSpan();
-			return traceId;
+		public String traceId(@RequestHeader("b3") String b3Single) {
+			TraceContextOrSamplingFlags traceContext = B3SingleFormat
+					.parseB3SingleFormat(b3Single);
+			then(traceContext.context()).isNotNull();
+			return b3Single;
 		}
 
 		@RequestMapping("/")
@@ -691,12 +652,10 @@ public class WebClientTests {
 		}
 
 		@RequestMapping("/noresponse")
-		public void noResponse(@RequestHeader(TRACE_ID_NAME) String traceId,
-				@RequestHeader(SPAN_ID_NAME) String spanId,
-				@RequestHeader(PARENT_ID_NAME) String parentId) {
-			then(traceId).isNotEmpty();
-			then(parentId).isNotEmpty();
-			then(spanId).isNotEmpty();
+		public void noResponse(@RequestHeader("b3") String b3Single) {
+			TraceContextOrSamplingFlags traceContext = B3SingleFormat
+					.parseB3SingleFormat(b3Single);
+			then(traceContext.context()).isNotNull();
 		}
 
 		public Span getSpan() {
@@ -709,18 +668,32 @@ public class WebClientTests {
 
 	}
 
+	@RestController
+	public static class WebClientController {
+
+		@RequestMapping(value = "/issue1462", method = RequestMethod.GET)
+		public ResponseEntity<String> issue1462() {
+			System.out.println("GOT IT");
+			return ResponseEntity.status(499).body("issue1462");
+		}
+
+		@RequestMapping(value = { "/skip", "/doNotSkip" }, method = RequestMethod.GET)
+		String skip() {
+			return "ok";
+		}
+
+	}
+
 	@Configuration
-	public static class SimpleRibbonClientConfiguration {
+	public static class SimpleLoadBalancerClientConfiguration {
 
 		@Value("${local.server.port}")
 		private int port = 0;
 
 		@Bean
-		public ILoadBalancer ribbonLoadBalancer() {
-			BaseLoadBalancer balancer = new BaseLoadBalancer();
-			balancer.setServersList(
-					Collections.singletonList(new Server("localhost", this.port)));
-			return balancer;
+		public ServiceInstanceListSupplier serviceInstanceListSupplier(Environment env) {
+			return ServiceInstanceListSupplier.fixed(env)
+					.instance(this.port, "fooservice").build();
 		}
 
 	}

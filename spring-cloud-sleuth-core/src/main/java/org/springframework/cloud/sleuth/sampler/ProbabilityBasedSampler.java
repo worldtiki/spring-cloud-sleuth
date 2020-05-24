@@ -26,18 +26,16 @@ import org.springframework.util.Assert;
 
 /**
  * This sampler is appropriate for low-traffic instrumentation (ex servers that each
- * receive <100K requests), or those who do not provision random trace ids. It not
- * appropriate for collectors as the sampling decision isn't idempotent (consistent based
- * on trace id).
+ * receive less than 100K requests), or those who do not provision random trace ids. It
+ * not appropriate for collectors as the sampling decision isn't idempotent (consistent
+ * based on trace id).
  *
- * <h3>Implementation</h3>
+ * Implementation
  *
  * <p>
- * Taken from <a href= "https://github.com/openzipkin/zipkin-java/blob/traceid-sampler/
- * zipkin/src/main/java/zipkin/CountingTraceIdSampler.java">Zipkin project</a>
+ * Taken from CountingTraceIdSampler class from Zipkin project.
  * </p>
  *
- * <p>
  * This counts to see how many out of 100 traces should be retained. This means that it is
  * accurate in units of 100 traces.
  *
@@ -45,7 +43,7 @@ import org.springframework.util.Assert;
  * @author Adrian Cole
  * @since 1.0.0
  */
-public class ProbabilityBasedSampler extends Sampler {
+class ProbabilityBasedSampler extends Sampler {
 
 	private final AtomicInteger counter = new AtomicInteger(0);
 
@@ -53,7 +51,7 @@ public class ProbabilityBasedSampler extends Sampler {
 
 	private final SamplerProperties configuration;
 
-	public ProbabilityBasedSampler(SamplerProperties configuration) {
+	ProbabilityBasedSampler(SamplerProperties configuration) {
 		Assert.notNull(configuration.getProbability(),
 				"probability property is required for ProbabilityBasedSampler");
 		int outOf100 = (int) (configuration.getProbability() * 100.0f);

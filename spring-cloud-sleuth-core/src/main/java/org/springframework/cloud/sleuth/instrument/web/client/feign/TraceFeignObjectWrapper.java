@@ -1,5 +1,5 @@
 /*
- * Copyright 2013-2019 the original author or authors.
+ * Copyright 2013-2020 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,38 +16,48 @@
 
 package org.springframework.cloud.sleuth.instrument.web.client.feign;
 
-import feign.Client;
+import java.lang.reflect.Field;
 
+import feign.Client;
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
+
+import org.springframework.aop.support.AopUtils;
 import org.springframework.beans.factory.BeanFactory;
-import org.springframework.cloud.netflix.ribbon.SpringClientFactory;
-import org.springframework.cloud.openfeign.ribbon.CachingSpringLoadBalancerFactory;
-import org.springframework.cloud.openfeign.ribbon.LoadBalancerFeignClient;
+import org.springframework.cloud.client.loadbalancer.LoadBalancerClient;
+import org.springframework.cloud.openfeign.loadbalancer.FeignBlockingLoadBalancerClient;
+import org.springframework.cloud.util.ProxyUtils;
 import org.springframework.util.ClassUtils;
 
 /**
  * Class that wraps Feign related classes into their Trace representative.
  *
  * @author Marcin Grzejszczak
+ * @author Olga Maciaszek-Sharma
  * @since 1.0.1
  */
 final class TraceFeignObjectWrapper {
 
-	private static final boolean ribbonPresent;
+	public static final String EXCEPTION_WARNING = "Exception occurred while trying to access the delegate's field. Will fallback to default instrumentation mechanism, which means that the delegate might not be instrumented";
+
+	private static final Log log = LogFactory.getLog(TraceFeignObjectWrapper.class);
+
+	private static final boolean loadBalancerPresent;
+
+	private static final String DELEGATE = "delegate";
 
 	static {
-		ribbonPresent = ClassUtils.isPresent(
-				"org.springframework.cloud.openfeign.ribbon.LoadBalancerFeignClient",
+		loadBalancerPresent = ClassUtils.isPresent(
+				"org.springframework.cloud.openfeign.loadbalancer.FeignBlockingLoadBalancerClient",
 				null)
 				&& ClassUtils.isPresent(
-						"org.springframework.cloud.netflix.ribbon.SpringClientFactory",
+						"org.springframework.cloud.loadbalancer.blocking.client.BlockingLoadBalancerClient",
 						null);
 	}
 
 	private final BeanFactory beanFactory;
 
-	private CachingSpringLoadBalancerFactory cachingSpringLoadBalancerFactory;
-
-	private Object springClientFactory;
+	private Object loadBalancerClient;
 
 	TraceFeignObjectWrapper(BeanFactory beanFactory) {
 		this.beanFactory = beanFactory;
@@ -55,37 +65,46 @@ final class TraceFeignObjectWrapper {
 
 	Object wrap(Object bean) {
 		if (bean instanceof Client && !(bean instanceof TracingFeignClient)) {
-			if (ribbonPresent && bean instanceof LoadBalancerFeignClient
-					&& !(bean instanceof TraceLoadBalancerFeignClient)) {
-				LoadBalancerFeignClient client = ((LoadBalancerFeignClient) bean);
-				return new TraceLoadBalancerFeignClient(
-						(Client) new TraceFeignObjectWrapper(this.beanFactory)
-								.wrap(client.getDelegate()),
-						factory(), (SpringClientFactory) clientFactory(),
-						this.beanFactory);
-			}
-			else if (ribbonPresent && bean instanceof TraceLoadBalancerFeignClient) {
-				return bean;
+			if (loadBalancerPresent && bean instanceof FeignBlockingLoadBalancerClient
+					&& !(bean instanceof TraceFeignBlockingLoadBalancerClient)) {
+				return instrumentedFeignLoadBalancerClient(bean);
 			}
 			return new LazyTracingFeignClient(this.beanFactory, (Client) bean);
 		}
 		return bean;
 	}
 
-	private CachingSpringLoadBalancerFactory factory() {
-		if (this.cachingSpringLoadBalancerFactory == null) {
-			this.cachingSpringLoadBalancerFactory = this.beanFactory
-					.getBean(CachingSpringLoadBalancerFactory.class);
+	private Object instrumentedFeignLoadBalancerClient(Object bean) {
+		if (AopUtils.getTargetClass(bean).equals(FeignBlockingLoadBalancerClient.class)) {
+			FeignBlockingLoadBalancerClient client = ProxyUtils.getTargetObject(bean);
+			return new TraceFeignBlockingLoadBalancerClient(
+					(Client) new TraceFeignObjectWrapper(this.beanFactory)
+							.wrap(client.getDelegate()),
+					(LoadBalancerClient) loadBalancerClient(), this.beanFactory);
 		}
-		return this.cachingSpringLoadBalancerFactory;
+		else {
+			FeignBlockingLoadBalancerClient client = ProxyUtils.getTargetObject(bean);
+			try {
+				Field delegate = FeignBlockingLoadBalancerClient.class
+						.getDeclaredField(DELEGATE);
+				delegate.setAccessible(true);
+				delegate.set(client, new TraceFeignObjectWrapper(this.beanFactory)
+						.wrap(client.getDelegate()));
+			}
+			catch (NoSuchFieldException | IllegalArgumentException
+					| IllegalAccessException | SecurityException e) {
+				log.warn(EXCEPTION_WARNING, e);
+			}
+			return new TraceFeignBlockingLoadBalancerClient(client,
+					(LoadBalancerClient) loadBalancerClient(), this.beanFactory);
+		}
 	}
 
-	private Object clientFactory() {
-		if (this.springClientFactory == null) {
-			this.springClientFactory = this.beanFactory
-					.getBean(SpringClientFactory.class);
+	private Object loadBalancerClient() {
+		if (loadBalancerClient == null) {
+			loadBalancerClient = beanFactory.getBean(LoadBalancerClient.class);
 		}
-		return this.springClientFactory;
+		return loadBalancerClient;
 	}
 
 }

@@ -25,7 +25,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * @since 2.0.0
  */
 @ConfigurationProperties("spring.sleuth.opentracing")
-public class SleuthOpentracingProperties {
+class SleuthOpentracingProperties {
 
 	private boolean enabled = true;
 

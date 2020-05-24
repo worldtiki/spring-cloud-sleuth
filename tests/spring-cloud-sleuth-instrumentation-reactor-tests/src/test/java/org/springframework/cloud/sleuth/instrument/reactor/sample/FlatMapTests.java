@@ -21,25 +21,28 @@ import java.util.List;
 import java.util.stream.Collectors;
 
 import brave.Tracer;
+import brave.handler.MutableSpan;
+import brave.handler.SpanHandler;
 import brave.sampler.Sampler;
+import brave.test.TestSpanHandler;
 import org.awaitility.Awaitility;
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
-import org.junit.Rule;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
-import zipkin2.Span;
 
 import org.springframework.boot.WebApplicationType;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.builder.SpringApplicationBuilder;
-import org.springframework.boot.test.rule.OutputCapture;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
+import org.springframework.cloud.context.refresh.ContextRefresher;
 import org.springframework.cloud.sleuth.instrument.reactor.Issue866Configuration;
 import org.springframework.cloud.sleuth.instrument.reactor.TraceReactorAutoConfigurationAccessorConfiguration;
-import org.springframework.cloud.sleuth.util.ArrayListSpanReporter;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -54,26 +57,24 @@ import static org.springframework.web.reactive.function.server.RequestPredicates
 import static org.springframework.web.reactive.function.server.RouterFunctions.route;
 
 // https://github.com/spring-cloud/spring-cloud-sleuth/issues/850
+@ExtendWith(OutputCaptureExtension.class)
 public class FlatMapTests {
 
 	private static final Logger LOGGER = LoggerFactory.getLogger(FlatMapTests.class);
 
-	@Rule
-	public OutputCapture capture = new OutputCapture();
-
-	@BeforeClass
+	@BeforeAll
 	public static void setup() {
 		TraceReactorAutoConfigurationAccessorConfiguration.close();
 		Issue866Configuration.hook = null;
 	}
 
-	@AfterClass
+	@AfterAll
 	public static void cleanup() {
 		Issue866Configuration.hook = null;
 	}
 
 	@Test
-	public void should_work_with_flat_maps() {
+	public void should_work_with_flat_maps(CapturedOutput capture) {
 		// given
 		ConfigurableApplicationContext context = new SpringApplicationBuilder(
 				FlatMapTests.TestConfiguration.class, Issue866Configuration.class)
@@ -83,30 +84,61 @@ public class FlatMapTests {
 								"security.basic.enabled=false",
 								"management.security.enabled=false")
 						.run();
-		ArrayListSpanReporter accumulator = context.getBean(ArrayListSpanReporter.class);
+		assertReactorTracing(context, capture);
+	}
+
+	@Test
+	public void should_work_with_flat_maps_with_on_last_operator_instrumentation(
+			CapturedOutput capture) {
+		// given
+		ConfigurableApplicationContext context = new SpringApplicationBuilder(
+				FlatMapTests.TestConfiguration.class, Issue866Configuration.class)
+						.web(WebApplicationType.REACTIVE)
+						.properties("server.port=0", "spring.jmx.enabled=false",
+								"spring.sleuth.reactor.decorate-on-each=false",
+								"spring.application.name=TraceWebFlux2Tests",
+								"security.basic.enabled=false",
+								"management.security.enabled=false")
+						.run();
+		assertReactorTracing(context, capture);
+
+		try {
+			System.setProperty("spring.sleuth.reactor.decorate-on-each", "true");
+			// trigger context refreshed
+			context.getBean(ContextRefresher.class).refresh();
+			assertReactorTracing(context, capture);
+		}
+		finally {
+			System.clearProperty("spring.sleuth.reactor.decorate-on-each");
+		}
+	}
+
+	private void assertReactorTracing(ConfigurableApplicationContext context,
+			CapturedOutput capture) {
+		TestSpanHandler spans = context.getBean(TestSpanHandler.class);
 		int port = context.getBean(Environment.class).getProperty("local.server.port",
 				Integer.class);
 		RequestSender sender = context.getBean(RequestSender.class);
 		TestConfiguration config = context.getBean(TestConfiguration.class);
 		FactoryUser factoryUser = context.getBean(FactoryUser.class);
 		sender.port = port;
-		accumulator.clear();
+		spans.clear();
 
 		Awaitility.await().untilAsserted(() -> {
 			// when
 			LOGGER.info("Start");
-			accumulator.clear();
-			String firstTraceId = flatMapTraceId(accumulator, callFlatMap(port).block());
+			spans.clear();
+			String firstTraceId = flatMapTraceId(spans, callFlatMap(port).block());
 			// then
 			LOGGER.info("Checking first trace id");
 			thenAllWebClientCallsHaveSameTraceId(firstTraceId, sender);
 			thenSpanInFooHasSameTraceId(firstTraceId, config);
-			accumulator.clear();
+			spans.clear();
 			LOGGER.info("All web client calls have same trace id");
 
 			// when
 			LOGGER.info("Second trace start");
-			String secondTraceId = flatMapTraceId(accumulator, callFlatMap(port).block());
+			String secondTraceId = flatMapTraceId(spans, callFlatMap(port).block());
 			// then
 			then(firstTraceId).as("Id will not be reused between calls")
 					.isNotEqualTo(secondTraceId);
@@ -114,7 +146,7 @@ public class FlatMapTests {
 			thenSpanInFooHasSameTraceId(secondTraceId, config);
 			LOGGER.info("Span in Foo has same trace id");
 			// and
-			List<String> requestUri = Arrays.stream(this.capture.toString().split("\n"))
+			List<String> requestUri = Arrays.stream(capture.toString().split("\n"))
 					.filter(s -> s.contains("Received a request to uri"))
 					.map(s -> s.split(",")[1]).collect(Collectors.toList());
 			LOGGER.info(
@@ -143,15 +175,14 @@ public class FlatMapTests {
 				.exchange();
 	}
 
-	private String flatMapTraceId(ArrayListSpanReporter accumulator,
-			ClientResponse response) {
+	private String flatMapTraceId(TestSpanHandler spans, ClientResponse response) {
 		then(response.statusCode().value()).isEqualTo(200);
-		then(accumulator.getSpans()).isNotEmpty();
-		LOGGER.info("Accumulated spans: " + accumulator.getSpans());
-		List<String> traceIdOfFlatMap = accumulator.getSpans().stream()
+		then(spans).isNotEmpty();
+		LOGGER.info("Accumulated spans: " + spans);
+		List<String> traceIdOfFlatMap = spans.spans().stream()
 				.filter(span -> span.tags().containsKey("http.path")
 						&& span.tags().get("http.path").equals("/withFlatMap"))
-				.map(Span::traceId).collect(Collectors.toList());
+				.map(MutableSpan::traceId).collect(Collectors.toList());
 		then(traceIdOfFlatMap).hasSize(1);
 		return traceIdOfFlatMap.get(0);
 	}
@@ -193,8 +224,8 @@ public class FlatMapTests {
 		}
 
 		@Bean
-		ArrayListSpanReporter reporter() {
-			return new ArrayListSpanReporter();
+		SpanHandler testSpanHandler() {
+			return new TestSpanHandler();
 		}
 
 		@Bean

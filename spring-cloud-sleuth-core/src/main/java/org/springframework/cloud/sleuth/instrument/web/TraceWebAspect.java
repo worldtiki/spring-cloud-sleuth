@@ -32,19 +32,14 @@ import org.springframework.cloud.sleuth.instrument.async.TraceCallable;
 import org.springframework.web.context.request.async.WebAsyncTask;
 
 /**
- * Aspect that adds tracing to
- * <p/>
- * <ul>
- * <li>{@code RestController} annotated classes with public {@link Callable} methods</li>
- * <li>{@link org.springframework.stereotype.Controller} annotated classes with public
- * {@link Callable} methods</li>
- * <li>{@link org.springframework.stereotype.Controller} or {@code RestController}
- * annotated classes with public {@link WebAsyncTask} methods</li>
- * </ul>
- * <p/>
+ * Aspect that adds tracing. {@code RestController} annotated classes with public
+ * {@link Callable} methods {@link org.springframework.stereotype.Controller} annotated
+ * classes with public {@link Callable} methods
+ * {@link org.springframework.stereotype.Controller} or {@code RestController} annotated
+ * classes with public {@link WebAsyncTask} methods.
+ *
  * For controllers an around aspect is created that wraps the {@link Callable#call()}
- * method execution in {@link TraceCallable}
- * <p/>
+ * method execution in {@link TraceCallable}.
  *
  * This aspect will continue a span created by the TracingFilter. It will not create a new
  * span - since the one in TracingFilter will wait until processing has been finished
@@ -59,7 +54,7 @@ import org.springframework.web.context.request.async.WebAsyncTask;
  */
 @SuppressWarnings("ArgNamesWarningsInspection")
 @Aspect
-public class TraceWebAspect {
+class TraceWebAspect {
 
 	private static final Log log = org.apache.commons.logging.LogFactory
 			.getLog(TraceWebAspect.class);
@@ -68,7 +63,7 @@ public class TraceWebAspect {
 
 	private final SpanNamer spanNamer;
 
-	public TraceWebAspect(Tracing tracing, SpanNamer spanNamer) {
+	TraceWebAspect(Tracing tracing, SpanNamer spanNamer) {
 		this.tracing = tracing;
 		this.spanNamer = spanNamer;
 	}

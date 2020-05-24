@@ -39,8 +39,8 @@ import org.apache.commons.logging.LogFactory;
 
 import org.springframework.beans.factory.BeanFactory;
 import org.springframework.beans.factory.NoSuchBeanDefinitionException;
-import org.springframework.cloud.sleuth.DefaultSpanNamer;
 import org.springframework.cloud.sleuth.SpanNamer;
+import org.springframework.cloud.sleuth.internal.DefaultSpanNamer;
 import org.springframework.util.ReflectionUtils;
 
 /**
@@ -363,9 +363,7 @@ class LazyTraceScheduledThreadPoolExecutor extends ScheduledThreadPoolExecutor {
 	}
 
 	@Override
-	@Deprecated
 	public void finalize() {
-		ReflectionUtils.invokeMethod(this.finalize, this.delegate);
 	}
 
 	@Override

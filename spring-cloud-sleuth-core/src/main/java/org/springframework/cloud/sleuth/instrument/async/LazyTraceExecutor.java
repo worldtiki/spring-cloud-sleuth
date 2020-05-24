@@ -24,8 +24,8 @@ import org.apache.commons.logging.LogFactory;
 
 import org.springframework.beans.factory.BeanFactory;
 import org.springframework.beans.factory.NoSuchBeanDefinitionException;
-import org.springframework.cloud.sleuth.DefaultSpanNamer;
 import org.springframework.cloud.sleuth.SpanNamer;
+import org.springframework.cloud.sleuth.internal.DefaultSpanNamer;
 
 /**
  * {@link Executor} that wraps {@link Runnable} in a trace representation.
@@ -33,6 +33,7 @@ import org.springframework.cloud.sleuth.SpanNamer;
  * @author Dave Syer
  * @since 1.0.0
  */
+// public as most types in this package were documented for use
 public class LazyTraceExecutor implements Executor {
 
 	private static final Log log = LogFactory.getLog(LazyTraceExecutor.class);
@@ -52,7 +53,7 @@ public class LazyTraceExecutor implements Executor {
 
 	@Override
 	public void execute(Runnable command) {
-		if (ContextUtil.isContextInCreation(this.beanFactory)) {
+		if (ContextUtil.isContextUnusable(this.beanFactory)) {
 			this.delegate.execute(command);
 			return;
 		}

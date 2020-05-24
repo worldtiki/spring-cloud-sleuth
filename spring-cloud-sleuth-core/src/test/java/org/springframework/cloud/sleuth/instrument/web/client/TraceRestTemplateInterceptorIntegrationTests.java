@@ -23,20 +23,19 @@ import java.util.Map;
 import brave.Span;
 import brave.Tracer;
 import brave.Tracing;
+import brave.handler.MutableSpan;
 import brave.http.HttpTracing;
-import brave.propagation.StrictScopeDecorator;
-import brave.propagation.ThreadLocalCurrentTraceContext;
+import brave.propagation.StrictCurrentTraceContext;
 import brave.spring.web.TracingClientHttpRequestInterceptor;
+import brave.test.TestSpanHandler;
 import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.MockWebServer;
 import okhttp3.mockwebserver.SocketPolicy;
 import org.assertj.core.api.BDDAssertions;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
-import org.springframework.cloud.sleuth.util.ArrayListSpanReporter;
 import org.springframework.http.client.ClientHttpRequestFactory;
 import org.springframework.http.client.ClientHttpRequestInterceptor;
 import org.springframework.http.client.HttpComponentsClientHttpRequestFactory;
@@ -49,30 +48,40 @@ import static org.assertj.core.api.Assertions.fail;
  */
 public class TraceRestTemplateInterceptorIntegrationTests {
 
-	@Rule
 	public final MockWebServer mockWebServer = new MockWebServer();
 
-	ArrayListSpanReporter reporter = new ArrayListSpanReporter();
+	@BeforeEach
+	void before() throws IOException {
+		mockWebServer.start();
+	}
 
-	Tracing tracing = Tracing.newBuilder()
-			.currentTraceContext(ThreadLocalCurrentTraceContext.newBuilder()
-					.addScopeDecorator(StrictScopeDecorator.create()).build())
-			.spanReporter(this.reporter).build();
+	@AfterEach
+	void after() throws IOException {
+		mockWebServer.close();
+	}
+
+	StrictCurrentTraceContext currentTraceContext = StrictCurrentTraceContext.create();
+
+	TestSpanHandler spans = new TestSpanHandler();
+
+	Tracing tracing = Tracing.newBuilder().currentTraceContext(this.currentTraceContext)
+			.addSpanHandler(this.spans).build();
 
 	Tracer tracer = this.tracing.tracer();
 
 	private RestTemplate template = new RestTemplate(clientHttpRequestFactory());
 
-	@Before
+	@BeforeEach
 	public void setup() {
 		this.template.setInterceptors(Arrays
 				.<ClientHttpRequestInterceptor>asList(TracingClientHttpRequestInterceptor
 						.create(HttpTracing.create(this.tracing))));
 	}
 
-	@After
+	@AfterEach
 	public void clean() {
-		Tracing.current().close();
+		this.tracing.close();
+		this.currentTraceContext.close();
 	}
 
 	// Issue #198
@@ -96,10 +105,10 @@ public class TraceRestTemplateInterceptorIntegrationTests {
 		}
 
 		// 1 span "new race", 1 span "rest template"
-		BDDAssertions.then(this.reporter.getSpans()).hasSize(2);
-		zipkin2.Span span1 = this.reporter.getSpans().get(0);
-		BDDAssertions.then(span1.tags()).containsEntry("error", "Read timed out");
-		BDDAssertions.then(span1.kind().ordinal()).isEqualTo(Span.Kind.CLIENT.ordinal());
+		BDDAssertions.then(this.spans).hasSize(2);
+		MutableSpan span1 = this.spans.get(0);
+		BDDAssertions.then(span1.error()).hasMessage("Read timed out");
+		BDDAssertions.then(span1.kind()).isEqualTo(Span.Kind.CLIENT);
 	}
 
 	private ClientHttpRequestFactory clientHttpRequestFactory() {

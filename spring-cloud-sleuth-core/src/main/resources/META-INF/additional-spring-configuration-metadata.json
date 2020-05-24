@@ -37,21 +37,9 @@
       "defaultValue": true
     },
     {
-      "name": "spring.sleuth.zuul.enabled",
-      "type": "java.lang.Boolean",
-      "description": "Enable span information propagation when using Zuul.",
-      "defaultValue": true
-    },
-    {
       "name": "spring.sleuth.grpc.enabled",
       "type": "java.lang.Boolean",
       "description": "Enable span information propagation when using GRPC.",
-      "defaultValue": true
-    },
-    {
-      "name": "spring.sleuth.redis.enabled",
-      "type": "java.lang.Boolean",
-      "description": "Enable span information propagation when using Redis.",
       "defaultValue": true
     },
     {
@@ -76,6 +64,12 @@
       "name": "spring.sleuth.messaging.kafka.mapper.enabled",
       "type": "java.lang.Boolean",
       "description": "Enable DefaultKafkaHeaderMapper tracing for Kafka.",
+      "defaultValue": true
+    },
+    {
+      "name": "spring.sleuth.rpc.enabled",
+      "type": "java.lang.Boolean",
+      "description": "Enable tracing of RPC.",
       "defaultValue": true
     }
   ]

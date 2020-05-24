@@ -17,38 +17,43 @@
 package org.springframework.cloud.sleuth.instrument.messaging;
 
 import brave.Tracer;
+import brave.handler.SpanHandler;
 import brave.kafka.clients.KafkaTracing;
+import brave.messaging.MessagingRequest;
+import brave.messaging.MessagingTracing;
 import brave.sampler.Sampler;
+import brave.sampler.SamplerFunction;
+import brave.sampler.SamplerFunctions;
 import brave.spring.rabbit.SpringRabbitTracing;
+import brave.test.TestSpanHandler;
 import org.apache.kafka.clients.consumer.Consumer;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.producer.Producer;
 import org.aspectj.lang.ProceedingJoinPoint;
-import org.junit.Test;
-import org.junit.runner.RunWith;
+import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.BeansException;
 import org.springframework.beans.factory.BeanFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.cloud.sleuth.util.ArrayListSpanReporter;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.cloud.sleuth.autoconfig.TraceAutoConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.ProducerFactory;
 import org.springframework.kafka.listener.MessageListenerContainer;
-import org.springframework.test.context.junit4.SpringRunner;
 
 import static org.assertj.core.api.BDDAssertions.then;
 
 /**
  * @author Marcin Grzejszczak
  */
-@RunWith(SpringRunner.class)
 @SpringBootTest(classes = TraceMessagingAutoConfigurationTests.Config.class,
 		webEnvironment = SpringBootTest.WebEnvironment.NONE)
 public class TraceMessagingAutoConfigurationTests {
@@ -57,7 +62,7 @@ public class TraceMessagingAutoConfigurationTests {
 	RabbitTemplate rabbitTemplate;
 
 	@Autowired
-	ArrayListSpanReporter reporter;
+	TestSpanHandler spans;
 
 	@Autowired
 	TestSleuthRabbitBeanPostProcessor postProcessor;
@@ -67,9 +72,6 @@ public class TraceMessagingAutoConfigurationTests {
 
 	@Autowired
 	MySleuthKafkaAspect mySleuthKafkaAspect;
-
-	@Autowired
-	TestSleuthKafkaHeaderMapperBeanPostProcessor testSleuthKafkaHeaderMapperBeanPostProcessor;
 
 	@Autowired
 	ProducerFactory producerFactory;
@@ -98,8 +100,54 @@ public class TraceMessagingAutoConfigurationTests {
 		then(this.mySleuthKafkaAspect.consumerWrapped).isTrue();
 
 		then(this.mySleuthKafkaAspect.adapterWrapped).isTrue();
+	}
 
-		then(this.testSleuthKafkaHeaderMapperBeanPostProcessor.tracingCalled).isTrue();
+	@Test
+	public void defaultsToBraveProducerSampler() {
+		contextRunner().run((context) -> {
+			SamplerFunction<MessagingRequest> producerSampler = context
+					.getBean(MessagingTracing.class).producerSampler();
+
+			then(producerSampler).isSameAs(SamplerFunctions.deferDecision());
+		});
+	}
+
+	@Test
+	public void configuresUserProvidedProducerSampler() {
+		contextRunner().withUserConfiguration(ProducerSamplerConfig.class)
+				.run((context) -> {
+					SamplerFunction<MessagingRequest> producerSampler = context
+							.getBean(MessagingTracing.class).producerSampler();
+
+					then(producerSampler).isSameAs(ProducerSamplerConfig.INSTANCE);
+				});
+	}
+
+	@Test
+	public void defaultsToBraveConsumerSampler() {
+		contextRunner().run((context) -> {
+			SamplerFunction<MessagingRequest> consumerSampler = context
+					.getBean(MessagingTracing.class).consumerSampler();
+
+			then(consumerSampler).isSameAs(SamplerFunctions.deferDecision());
+		});
+	}
+
+	@Test
+	public void configuresUserProvidedConsumerSampler() {
+		contextRunner().withUserConfiguration(ConsumerSamplerConfig.class)
+				.run((context) -> {
+					SamplerFunction<MessagingRequest> consumerSampler = context
+							.getBean(MessagingTracing.class).consumerSampler();
+
+					then(consumerSampler).isSameAs(ConsumerSamplerConfig.INSTANCE);
+				});
+	}
+
+	private ApplicationContextRunner contextRunner(String... propertyValues) {
+		return new ApplicationContextRunner().withPropertyValues(propertyValues)
+				.withConfiguration(AutoConfigurations.of(TraceAutoConfiguration.class,
+						TraceMessagingAutoConfiguration.class));
 	}
 
 	@Configuration
@@ -112,8 +160,8 @@ public class TraceMessagingAutoConfigurationTests {
 		}
 
 		@Bean
-		ArrayListSpanReporter reporter() {
-			return new ArrayListSpanReporter();
+		SpanHandler testSpanHandler() {
+			return new TestSpanHandler();
 		}
 
 		@Bean
@@ -131,11 +179,6 @@ public class TraceMessagingAutoConfigurationTests {
 		TestSleuthJmsBeanPostProcessor sleuthJmsBeanPostProcessor(
 				BeanFactory beanFactory) {
 			return new TestSleuthJmsBeanPostProcessor(beanFactory);
-		}
-
-		@Bean
-		TestSleuthKafkaHeaderMapperBeanPostProcessor testSleuthKafkaHeaderMapperBeanPostProcessor() {
-			return new TestSleuthKafkaHeaderMapperBeanPostProcessor();
 		}
 
 		@KafkaListener(topics = "backend", groupId = "foo")
@@ -213,15 +256,26 @@ class TestSleuthJmsBeanPostProcessor extends TracingConnectionFactoryBeanPostPro
 
 }
 
-class TestSleuthKafkaHeaderMapperBeanPostProcessor
-		extends SleuthKafkaHeaderMapperBeanPostProcessor {
+@Configuration
+class ProducerSamplerConfig {
 
-	boolean tracingCalled = false;
+	static final SamplerFunction<MessagingRequest> INSTANCE = request -> null;
 
-	@Override
-	Object sleuthDefaultKafkaHeaderMapper(Object bean) {
-		this.tracingCalled = true;
-		return super.sleuthDefaultKafkaHeaderMapper(bean);
+	@Bean(ProducerSampler.NAME)
+	SamplerFunction<MessagingRequest> sleuthProducerSampler() {
+		return INSTANCE;
+	}
+
+}
+
+@Configuration
+class ConsumerSamplerConfig {
+
+	static final SamplerFunction<MessagingRequest> INSTANCE = request -> null;
+
+	@Bean(ConsumerSampler.NAME)
+	SamplerFunction<MessagingRequest> sleuthConsumerSampler() {
+		return INSTANCE;
 	}
 
 }

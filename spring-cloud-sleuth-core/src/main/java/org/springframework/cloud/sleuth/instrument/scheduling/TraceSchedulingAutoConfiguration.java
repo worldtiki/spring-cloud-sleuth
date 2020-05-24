@@ -29,7 +29,6 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.cloud.sleuth.autoconfig.TraceAutoConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.context.annotation.EnableAspectJAutoProxy;
 
 /**
  * Registers beans related to task scheduling.
@@ -39,20 +38,21 @@ import org.springframework.context.annotation.EnableAspectJAutoProxy;
  * @since 1.0.0
  * @see TraceSchedulingAspect
  */
-@Configuration
-@EnableAspectJAutoProxy
+@Configuration(proxyBeanMethods = false)
+@ConditionalOnClass(name = "org.aspectj.lang.ProceedingJoinPoint")
 @ConditionalOnProperty(value = "spring.sleuth.scheduled.enabled", matchIfMissing = true)
 @ConditionalOnBean(Tracing.class)
 @AutoConfigureAfter(TraceAutoConfiguration.class)
 @EnableConfigurationProperties(SleuthSchedulingProperties.class)
-public class TraceSchedulingAutoConfiguration {
+class TraceSchedulingAutoConfiguration {
 
 	@Bean
-	@ConditionalOnClass(name = "org.aspectj.lang.ProceedingJoinPoint")
 	public TraceSchedulingAspect traceSchedulingAspect(Tracer tracer,
 			SleuthSchedulingProperties sleuthSchedulingProperties) {
-		return new TraceSchedulingAspect(tracer,
-				Pattern.compile(sleuthSchedulingProperties.getSkipPattern()));
+		String skipPatternString = sleuthSchedulingProperties.getSkipPattern();
+		Pattern skipPattern = skipPatternString != null
+				? Pattern.compile(skipPatternString) : null;
+		return new TraceSchedulingAspect(tracer, skipPattern);
 	}
 
 }

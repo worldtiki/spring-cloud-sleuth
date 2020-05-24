@@ -16,17 +16,15 @@
 
 package org.springframework.cloud.sleuth.instrument.feign.issues.issue393;
 
-import java.util.List;
 import java.util.stream.Collectors;
 
 import brave.Tracing;
+import brave.handler.SpanHandler;
 import brave.sampler.Sampler;
+import brave.test.TestSpanHandler;
 import feign.okhttp.OkHttpClient;
-import org.junit.Before;
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import zipkin2.Span;
-import zipkin2.reporter.Reporter;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
@@ -34,13 +32,10 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.cloud.client.discovery.EnableDiscoveryClient;
 import org.springframework.cloud.openfeign.EnableFeignClients;
 import org.springframework.cloud.openfeign.FeignClient;
-import org.springframework.cloud.sleuth.instrument.web.TraceWebServletAutoConfiguration;
-import org.springframework.cloud.sleuth.util.ArrayListSpanReporter;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.ResponseEntity;
 import org.springframework.test.context.TestPropertySource;
-import org.springframework.test.context.junit4.SpringJUnit4ClassRunner;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestMethod;
@@ -60,24 +55,24 @@ interface MyNameRemote {
 /**
  * @author Marcin Grzejszczak
  */
-@RunWith(SpringJUnit4ClassRunner.class)
+
 @SpringBootTest(classes = Application.class,
 		webEnvironment = SpringBootTest.WebEnvironment.DEFINED_PORT)
-@TestPropertySource(properties = { "spring.application.name=demo-feign-uri",
-		"server.port=9978", "eureka.client.enabled=true", "ribbon.eureka.enabled=true" })
+@TestPropertySource(
+		properties = { "spring.application.name=demo-feign-uri", "server.port=9978" })
 public class Issue393Tests {
 
 	RestTemplate template = new RestTemplate();
 
 	@Autowired
-	ArrayListSpanReporter reporter;
-
-	@Autowired
 	Tracing tracer;
 
-	@Before
+	@Autowired
+	TestSpanHandler spans;
+
+	@BeforeEach
 	public void open() {
-		this.reporter.clear();
+		this.spans.clear();
 	}
 
 	@Test
@@ -87,17 +82,19 @@ public class Issue393Tests {
 		ResponseEntity<String> response = this.template.getForEntity(url, String.class);
 
 		then(response.getBody()).isEqualTo("mikesarver foo");
-		List<Span> spans = this.reporter.getSpans();
 		// retries
-		then(spans).hasSize(2);
-		then(spans.stream().map(span -> span.tags().get("http.path"))
+		then(this.spans).hasSize(2);
+		then(this.spans.spans().stream().map(span -> span.tags().get("http.path"))
 				.collect(Collectors.toList())).containsOnly("/name/mikesarver");
 	}
 
 }
 
 @Configuration
-@EnableAutoConfiguration(exclude = TraceWebServletAutoConfiguration.class)
+@EnableAutoConfiguration(
+		// spring boot test will otherwise instrument the client and server with the
+		// same bean factory which isn't expected
+		excludeName = "org.springframework.cloud.sleuth.instrument.web.TraceWebServletAutoConfiguration")
 @EnableFeignClients
 @EnableDiscoveryClient
 class Application {
@@ -124,8 +121,8 @@ class Application {
 	}
 
 	@Bean
-	public Reporter<Span> spanReporter() {
-		return new ArrayListSpanReporter();
+	public SpanHandler testSpanHandler() {
+		return new TestSpanHandler();
 	}
 
 }

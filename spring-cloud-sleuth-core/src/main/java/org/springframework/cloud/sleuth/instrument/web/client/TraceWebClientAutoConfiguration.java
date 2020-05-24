@@ -42,7 +42,8 @@ import org.springframework.boot.autoconfigure.security.oauth2.resource.UserInfoR
 import org.springframework.boot.web.client.RestTemplateCustomizer;
 import org.springframework.cloud.commons.httpclient.HttpClientConfiguration;
 import org.springframework.cloud.gateway.filter.headers.HttpHeadersFilter;
-import org.springframework.cloud.sleuth.instrument.web.TraceWebServletAutoConfiguration;
+import org.springframework.cloud.sleuth.instrument.web.TraceHttpAutoConfiguration;
+import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.annotation.Order;
@@ -62,14 +63,14 @@ import org.springframework.web.reactive.function.client.WebClient;
  * @author Marcin Grzejszczak
  * @since 1.0.0
  */
-@Configuration
+@Configuration(proxyBeanMethods = false)
 @SleuthWebClientEnabled
 @ConditionalOnBean(HttpTracing.class)
-@AutoConfigureAfter(TraceWebServletAutoConfiguration.class)
+@AutoConfigureAfter(TraceHttpAutoConfiguration.class)
 @AutoConfigureBefore(HttpClientConfiguration.class)
-public class TraceWebClientAutoConfiguration {
+class TraceWebClientAutoConfiguration {
 
-	@Configuration
+	@Configuration(proxyBeanMethods = false)
 	@ConditionalOnClass(RestTemplate.class)
 	static class RestTemplateConfig {
 
@@ -80,7 +81,7 @@ public class TraceWebClientAutoConfiguration {
 					.create(httpTracing);
 		}
 
-		@Configuration
+		@Configuration(proxyBeanMethods = false)
 		protected static class TraceInterceptorConfiguration {
 
 			@Autowired
@@ -103,7 +104,7 @@ public class TraceWebClientAutoConfiguration {
 
 	}
 
-	@Configuration
+	@Configuration(proxyBeanMethods = false)
 	@ConditionalOnClass(HttpClientBuilder.class)
 	static class HttpClientBuilderConfig {
 
@@ -115,7 +116,7 @@ public class TraceWebClientAutoConfiguration {
 
 	}
 
-	@Configuration
+	@Configuration(proxyBeanMethods = false)
 	@ConditionalOnClass(HttpAsyncClientBuilder.class)
 	static class HttpAsyncClientBuilderConfig {
 
@@ -127,19 +128,19 @@ public class TraceWebClientAutoConfiguration {
 
 	}
 
-	@Configuration
+	@Configuration(proxyBeanMethods = false)
 	@ConditionalOnClass(WebClient.class)
 	static class WebClientConfig {
 
 		@Bean
 		static TraceWebClientBeanPostProcessor traceWebClientBeanPostProcessor(
-				BeanFactory beanFactory) {
-			return new TraceWebClientBeanPostProcessor(beanFactory);
+				ConfigurableApplicationContext springContext) {
+			return new TraceWebClientBeanPostProcessor(springContext);
 		}
 
 	}
 
-	@Configuration
+	@Configuration(proxyBeanMethods = false)
 	@ConditionalOnClass(HttpHeadersFilter.class)
 	static class HttpHeadersFilterConfig {
 
@@ -155,32 +156,32 @@ public class TraceWebClientAutoConfiguration {
 
 	}
 
-	@Configuration
+	@Configuration(proxyBeanMethods = false)
 	@ConditionalOnClass(HttpClient.class)
 	static class NettyConfiguration {
 
 		@Bean
-		public HttpClientBeanPostProcessor httpClientBeanPostProcessor(
-				BeanFactory beanFactory) {
-			return new HttpClientBeanPostProcessor(beanFactory);
+		static HttpClientBeanPostProcessor httpClientBeanPostProcessor(
+				ConfigurableApplicationContext springContext) {
+			return new HttpClientBeanPostProcessor(springContext);
 		}
 
 	}
 
-	@Configuration
+	@Configuration(proxyBeanMethods = false)
 	@ConditionalOnClass({ UserInfoRestTemplateCustomizer.class,
 			OAuth2RestTemplate.class })
 	protected static class TraceOAuthConfiguration {
 
 		@Bean
-		UserInfoRestTemplateCustomizerBPP userInfoRestTemplateCustomizerBeanPostProcessor(
+		static UserInfoRestTemplateCustomizerBPP userInfoRestTemplateCustomizerBeanPostProcessor(
 				BeanFactory beanFactory) {
 			return new UserInfoRestTemplateCustomizerBPP(beanFactory);
 		}
 
 		@Bean
 		@ConditionalOnMissingBean
-		UserInfoRestTemplateCustomizer traceUserInfoRestTemplateCustomizer(
+		static UserInfoRestTemplateCustomizer traceUserInfoRestTemplateCustomizer(
 				BeanFactory beanFactory) {
 			return new TraceUserInfoRestTemplateCustomizer(beanFactory);
 		}

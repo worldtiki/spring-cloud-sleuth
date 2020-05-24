@@ -1,5 +1,5 @@
 /*
- * Copyright 2013-2019 the original author or authors.
+ * Copyright 2013-2020 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -29,7 +29,7 @@ import org.apache.commons.logging.LogFactory;
 
 import org.springframework.aop.support.AopUtils;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.cloud.sleuth.util.SpanNameUtil;
+import org.springframework.cloud.sleuth.internal.SpanNameUtil;
 import org.springframework.integration.channel.AbstractMessageChannel;
 import org.springframework.integration.channel.DirectChannel;
 import org.springframework.integration.context.IntegrationObjectSupport;
@@ -50,16 +50,14 @@ import org.springframework.util.ClassUtils;
  * native headers. It also extracts or creates a {@link Span.Kind#CONSUMER} span for each
  * message received. This span is injected onto each message so it becomes the parent when
  * a handler later calls {@link MessageHandler#handleMessage(Message)}, or a another
- * processing library calls {@link #nextSpan(Message)}.
- * <p>
- * <p>
- * This implementation uses {@link ThreadLocalSpan} to propagate context between
- * callbacks. This is an alternative to {@code ThreadStatePropagationChannelInterceptor}
- * which is less sensitive to message manipulation by other interceptors.
+ * processing library calls {@link #nextSpan(Message)}. This implementation uses
+ * {@link ThreadLocalSpan} to propagate context between callbacks. This is an alternative
+ * to {@code ThreadStatePropagationChannelInterceptor} which is less sensitive to message
+ * manipulation by other interceptors.
  *
  * @author Marcin Grzejszczak
  */
-public final class TracingChannelInterceptor extends ChannelInterceptorAdapter
+final class TracingChannelInterceptor extends ChannelInterceptorAdapter
 		implements ExecutorChannelInterceptor {
 
 	/**
@@ -136,11 +134,8 @@ public final class TracingChannelInterceptor extends ChannelInterceptorAdapter
 
 	/**
 	 * Use this to create a span for processing the given message. Note: the result has no
-	 * name and is not started.
-	 * <p>
-	 * <p>
-	 * This creates a child from identifiers extracted from the message headers, or a new
-	 * span if one couldn't be extracted.
+	 * name and is not started. This creates a child from identifiers extracted from the
+	 * message headers, or a new span if one couldn't be extracted.
 	 * @param message message to use for span creation
 	 * @return span to be created
 	 */
@@ -175,7 +170,7 @@ public final class TracingChannelInterceptor extends ChannelInterceptorAdapter
 		this.injector.inject(span.context(), headers);
 		if (!span.isNoop()) {
 			span.kind(Span.Kind.PRODUCER).name("send").start();
-			span.remoteServiceName(REMOTE_SERVICE_NAME);
+			span.remoteServiceName(toRemoteServiceName(headers));
 			addTags(message, span, channel);
 		}
 		if (log.isDebugEnabled()) {
@@ -186,6 +181,18 @@ public final class TracingChannelInterceptor extends ChannelInterceptorAdapter
 			beforeHandle(outputMessage, channel, null);
 		}
 		return outputMessage;
+	}
+
+	private String toRemoteServiceName(MessageHeaderAccessor headers) {
+		for (String key : headers.getMessageHeaders().keySet()) {
+			if (key.startsWith("kafka_")) {
+				return "kafka";
+			}
+			else if (key.startsWith("amqp_")) {
+				return "rabbitmq";
+			}
+		}
+		return REMOTE_SERVICE_NAME;
 	}
 
 	private Message<?> outputMessage(Message<?> originalMessage,
@@ -263,7 +270,7 @@ public final class TracingChannelInterceptor extends ChannelInterceptorAdapter
 		this.injector.inject(span.context(), headers);
 		if (!span.isNoop()) {
 			span.kind(Span.Kind.CONSUMER).name("receive").start();
-			span.remoteServiceName(REMOTE_SERVICE_NAME);
+			span.remoteServiceName(toRemoteServiceName(headers));
 			addTags(message, span, channel);
 		}
 		if (log.isDebugEnabled()) {

@@ -17,34 +17,34 @@
 package org.springframework.cloud.sleuth.instrument.async;
 
 import brave.Tracing;
-import brave.propagation.StrictScopeDecorator;
-import brave.propagation.ThreadLocalCurrentTraceContext;
+import brave.propagation.StrictCurrentTraceContext;
+import brave.test.TestSpanHandler;
 import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.reflect.MethodSignature;
 import org.assertj.core.api.BDDAssertions;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.mockito.BDDMockito;
 import org.mockito.Mockito;
 
-import org.springframework.cloud.sleuth.DefaultSpanNamer;
-import org.springframework.cloud.sleuth.util.ArrayListSpanReporter;
+import org.springframework.cloud.sleuth.internal.DefaultSpanNamer;
 
 /**
  * @author Marcin Grzejszczak
  */
 public class TraceAsyncAspectTest {
 
-	ArrayListSpanReporter reporter = new ArrayListSpanReporter();
+	StrictCurrentTraceContext currentTraceContext = StrictCurrentTraceContext.create();
 
-	Tracing tracing = Tracing.newBuilder()
-			.currentTraceContext(ThreadLocalCurrentTraceContext.newBuilder()
-					.addScopeDecorator(StrictScopeDecorator.create()).build())
-			.spanReporter(this.reporter).build();
+	TestSpanHandler spans = new TestSpanHandler();
+
+	Tracing tracing = Tracing.newBuilder().currentTraceContext(this.currentTraceContext)
+			.addSpanHandler(this.spans).build();
 
 	ProceedingJoinPoint point = Mockito.mock(ProceedingJoinPoint.class);
 
-	@Before
+	@BeforeEach
 	public void setup() throws NoSuchMethodException {
 		MethodSignature signature = Mockito.mock(MethodSignature.class);
 		BDDMockito.given(signature.getName()).willReturn("fooBar");
@@ -52,6 +52,12 @@ public class TraceAsyncAspectTest {
 				.willReturn(TraceAsyncAspectTest.class.getMethod("setup"));
 		BDDMockito.given(this.point.getSignature()).willReturn(signature);
 		BDDMockito.given(this.point.getTarget()).willReturn("");
+	}
+
+	@AfterEach
+	public void close() {
+		this.tracing.close();
+		this.currentTraceContext.close();
 	}
 
 	// Issue#926
@@ -67,9 +73,9 @@ public class TraceAsyncAspectTest {
 
 		asyncAspect.traceBackgroundThread(this.point);
 
-		BDDAssertions.then(this.reporter.getSpans()).hasSize(1);
-		BDDAssertions.then(this.reporter.getSpans().get(0).name()).isEqualTo("foo-bar");
-		BDDAssertions.then(this.reporter.getSpans().get(0).timestamp()).isPositive();
+		BDDAssertions.then(this.spans).hasSize(1);
+		BDDAssertions.then(this.spans.get(0).name()).isEqualTo("foo-bar");
+		BDDAssertions.then(this.spans.get(0).finishTimestamp()).isPositive();
 	}
 
 }

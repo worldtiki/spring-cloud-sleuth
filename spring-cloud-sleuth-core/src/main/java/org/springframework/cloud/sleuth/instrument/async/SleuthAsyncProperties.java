@@ -27,9 +27,8 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * @author Jesus Alonso
  * @since 2.1.0
  */
-
 @ConfigurationProperties(prefix = "spring.sleuth.async")
-public class SleuthAsyncProperties {
+class SleuthAsyncProperties {
 
 	/**
 	 * List of {@link java.util.concurrent.Executor} bean names that should be ignored and

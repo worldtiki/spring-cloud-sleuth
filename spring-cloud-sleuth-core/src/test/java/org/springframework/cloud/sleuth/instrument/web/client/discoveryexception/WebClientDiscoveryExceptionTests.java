@@ -17,35 +17,37 @@
 package org.springframework.cloud.sleuth.instrument.web.client.discoveryexception;
 
 import java.io.IOException;
+import java.net.URI;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
 import brave.Span;
 import brave.Tracer;
+import brave.handler.SpanHandler;
 import brave.sampler.Sampler;
+import brave.test.TestSpanHandler;
 import org.assertj.core.api.Assertions;
-import org.junit.Before;
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import zipkin2.reporter.Reporter;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import reactor.core.publisher.Flux;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.cloud.client.ServiceInstance;
 import org.springframework.cloud.client.discovery.EnableDiscoveryClient;
 import org.springframework.cloud.client.loadbalancer.LoadBalanced;
+import org.springframework.cloud.loadbalancer.annotation.LoadBalancerClient;
+import org.springframework.cloud.loadbalancer.core.ServiceInstanceListSupplier;
 import org.springframework.cloud.netflix.eureka.EurekaClientAutoConfiguration;
-import org.springframework.cloud.netflix.ribbon.RibbonClient;
 import org.springframework.cloud.openfeign.EnableFeignClients;
 import org.springframework.cloud.openfeign.FeignClient;
-import org.springframework.cloud.sleuth.instrument.web.TraceWebServletAutoConfiguration;
-import org.springframework.cloud.sleuth.util.ArrayListSpanReporter;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.ResponseEntity;
 import org.springframework.test.annotation.DirtiesContext;
 import org.springframework.test.context.TestPropertySource;
-import org.springframework.test.context.junit4.SpringJUnit4ClassRunner;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestMethod;
 import org.springframework.web.client.RestTemplate;
@@ -53,11 +55,9 @@ import org.springframework.web.client.RestTemplate;
 import static org.assertj.core.api.BDDAssertions.then;
 import static org.springframework.boot.test.context.SpringBootTest.WebEnvironment.RANDOM_PORT;
 
-@RunWith(SpringJUnit4ClassRunner.class)
 @SpringBootTest(classes = { WebClientDiscoveryExceptionTests.TestConfiguration.class },
 		webEnvironment = RANDOM_PORT)
-@TestPropertySource(properties = { "spring.application.name=exceptionservice",
-		"spring.sleuth.http.legacy.enabled=true" })
+@TestPropertySource(properties = { "spring.application.name=exceptionservice" })
 @DirtiesContext
 public class WebClientDiscoveryExceptionTests {
 
@@ -72,11 +72,11 @@ public class WebClientDiscoveryExceptionTests {
 	Tracer tracer;
 
 	@Autowired
-	ArrayListSpanReporter reporter;
+	TestSpanHandler spans;
 
-	@Before
+	@BeforeEach
 	public void close() {
-		this.reporter.clear();
+		this.spans.clear();
 	}
 
 	// issue #240
@@ -96,9 +96,8 @@ public class WebClientDiscoveryExceptionTests {
 
 		// hystrix commands should finish at this point
 		Thread.sleep(200);
-		List<zipkin2.Span> spans = this.reporter.getSpans();
-		then(spans.stream().filter(span1 -> span1.kind() == zipkin2.Span.Kind.CLIENT)
-				.findFirst().get().tags()).containsKey("error");
+		then(this.spans.spans().stream().filter(span1 -> span1.kind() == Span.Kind.CLIENT)
+				.findFirst().get().error()).isNotNull();
 	}
 
 	@Test
@@ -130,11 +129,12 @@ public class WebClientDiscoveryExceptionTests {
 	}
 
 	@Configuration
-	@EnableAutoConfiguration(exclude = { EurekaClientAutoConfiguration.class,
-			TraceWebServletAutoConfiguration.class })
+	@EnableAutoConfiguration(
+			excludeName = "org.springframework.cloud.sleuth.instrument.web.TraceWebServletAutoConfiguration",
+			exclude = EurekaClientAutoConfiguration.class)
 	@EnableDiscoveryClient
 	@EnableFeignClients
-	@RibbonClient("exceptionservice")
+	@LoadBalancerClient("exceptionservice")
 	public static class TestConfiguration {
 
 		@LoadBalanced
@@ -149,8 +149,53 @@ public class WebClientDiscoveryExceptionTests {
 		}
 
 		@Bean
-		Reporter<zipkin2.Span> mySpanReporter() {
-			return new ArrayListSpanReporter();
+		SpanHandler testSpanHandler() {
+			return new TestSpanHandler();
+		}
+
+		@Bean
+		ServiceInstanceListSupplier serviceInstanceListSupplier() {
+			return new ServiceInstanceListSupplier() {
+				@Override
+				public String getServiceId() {
+					return "exceptionservice";
+				}
+
+				@Override
+				public Flux<List<ServiceInstance>> get() {
+					return Flux.just(Collections.singletonList(new ServiceInstance() {
+						@Override
+						public String getServiceId() {
+							return "exceptionservice";
+						}
+
+						@Override
+						public String getHost() {
+							return "localhost";
+						}
+
+						@Override
+						public int getPort() {
+							return 1234;
+						}
+
+						@Override
+						public boolean isSecure() {
+							return false;
+						}
+
+						@Override
+						public URI getUri() {
+							return null;
+						}
+
+						@Override
+						public Map<String, String> getMetadata() {
+							return null;
+						}
+					}));
+				}
+			};
 		}
 
 	}

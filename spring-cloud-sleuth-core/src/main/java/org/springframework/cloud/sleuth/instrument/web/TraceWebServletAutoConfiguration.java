@@ -38,6 +38,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.cloud.sleuth.SpanNamer;
 import org.springframework.context.annotation.Bean;
@@ -53,13 +54,14 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
  * @author Spencer Gibb
  * @since 1.0.0
  */
-@Configuration
+@Configuration(proxyBeanMethods = false)
 @ConditionalOnProperty(value = "spring.sleuth.web.enabled", matchIfMissing = true)
 @ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.SERVLET)
 @ConditionalOnBean(HttpTracing.class)
 @AutoConfigureAfter(TraceHttpAutoConfiguration.class)
+@EnableConfigurationProperties(SleuthWebProperties.class)
 @Import(SpanCustomizingAsyncHandlerInterceptor.class)
-public class TraceWebServletAutoConfiguration {
+class TraceWebServletAutoConfiguration {
 
 	/**
 	 * Default filter order for the Http tracing filter.
@@ -83,21 +85,6 @@ public class TraceWebServletAutoConfiguration {
 		return filterRegistrationBean;
 	}
 
-	// TODO: Rename to exception-logging-filter for 3.0
-	@Bean
-	@ConditionalOnProperty(value = "spring.sleuth.web.exception-logging-filter-enabled",
-			matchIfMissing = true)
-	public FilterRegistrationBean exceptionThrowingFilter(
-			SleuthWebProperties webProperties) {
-		FilterRegistrationBean filterRegistrationBean = new FilterRegistrationBean(
-				new ExceptionLoggingFilter());
-		filterRegistrationBean.setDispatcherTypes(DispatcherType.ASYNC,
-				DispatcherType.ERROR, DispatcherType.FORWARD, DispatcherType.INCLUDE,
-				DispatcherType.REQUEST);
-		filterRegistrationBean.setOrder(webProperties.getFilterOrder());
-		return filterRegistrationBean;
-	}
-
 	@Bean
 	@ConditionalOnMissingBean
 	public TracingFilter tracingFilter(HttpTracing tracing) {
@@ -108,7 +95,7 @@ public class TraceWebServletAutoConfiguration {
 	 * Nested config that configures Web MVC if it's present (without adding a runtime
 	 * dependency to it).
 	 */
-	@Configuration
+	@Configuration(proxyBeanMethods = false)
 	@ConditionalOnClass(WebMvcConfigurer.class)
 	@Import(TraceWebMvcConfigurer.class)
 	protected static class TraceWebMvcAutoConfiguration {

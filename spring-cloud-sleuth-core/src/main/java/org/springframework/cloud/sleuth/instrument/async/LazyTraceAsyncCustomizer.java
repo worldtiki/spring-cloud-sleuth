@@ -30,6 +30,7 @@ import org.springframework.scheduling.annotation.AsyncConfigurerSupport;
  * @author Dave Syer
  * @since 1.0.0
  */
+// public as most types in this package were documented for use
 public class LazyTraceAsyncCustomizer extends AsyncConfigurerSupport {
 
 	private final BeanFactory beanFactory;

@@ -23,11 +23,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import brave.Span;
 import brave.Tracer;
 import brave.Tracing;
-import brave.propagation.StrictScopeDecorator;
-import brave.propagation.ThreadLocalCurrentTraceContext;
+import brave.propagation.StrictCurrentTraceContext;
 import org.assertj.core.api.BDDAssertions;
 import org.awaitility.Awaitility;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
 
 import org.springframework.core.task.AsyncListenableTaskExecutor;
 import org.springframework.core.task.SimpleAsyncTaskExecutor;
@@ -39,15 +39,21 @@ public class TraceAsyncListenableTaskExecutorTest {
 
 	AsyncListenableTaskExecutor delegate = new SimpleAsyncTaskExecutor();
 
-	Tracing tracing = Tracing.newBuilder()
-			.currentTraceContext(ThreadLocalCurrentTraceContext.newBuilder()
-					.addScopeDecorator(StrictScopeDecorator.create()).build())
+	StrictCurrentTraceContext currentTraceContext = StrictCurrentTraceContext.create();
+
+	Tracing tracing = Tracing.newBuilder().currentTraceContext(currentTraceContext)
 			.build();
 
 	Tracer tracer = this.tracing.tracer();
 
 	TraceAsyncListenableTaskExecutor traceAsyncListenableTaskExecutor = new TraceAsyncListenableTaskExecutor(
 			this.delegate, this.tracing);
+
+	@AfterEach
+	public void close() {
+		this.tracing.close();
+		this.currentTraceContext.close();
+	}
 
 	@Test
 	public void should_submit_listenable_trace_runnable() throws Exception {

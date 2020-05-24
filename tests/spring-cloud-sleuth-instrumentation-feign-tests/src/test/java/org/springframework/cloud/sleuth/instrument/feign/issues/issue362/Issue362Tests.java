@@ -18,14 +18,15 @@ package org.springframework.cloud.sleuth.instrument.feign.issues.issue362;
 
 import java.io.IOException;
 import java.util.Date;
-import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.stream.Collectors;
 
 import brave.Tracing;
+import brave.handler.SpanHandler;
 import brave.sampler.Sampler;
+import brave.test.TestSpanHandler;
 import feign.Client;
 import feign.Logger;
 import feign.Request;
@@ -33,25 +34,19 @@ import feign.Response;
 import feign.RetryableException;
 import feign.Retryer;
 import feign.codec.ErrorDecoder;
-import org.junit.Before;
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import zipkin2.Span;
-import zipkin2.reporter.Reporter;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.cloud.openfeign.EnableFeignClients;
 import org.springframework.cloud.openfeign.FeignClient;
-import org.springframework.cloud.sleuth.instrument.web.TraceWebServletAutoConfiguration;
-import org.springframework.cloud.sleuth.util.ArrayListSpanReporter;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.test.context.TestPropertySource;
-import org.springframework.test.context.junit4.SpringJUnit4ClassRunner;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
@@ -75,11 +70,10 @@ interface MyFeignClient {
 /**
  * @author Marcin Grzejszczak
  */
-@RunWith(SpringJUnit4ClassRunner.class)
+
 @SpringBootTest(classes = Application.class,
 		webEnvironment = SpringBootTest.WebEnvironment.DEFINED_PORT)
-@TestPropertySource(properties = { "ribbon.eureka.enabled=false",
-		"feign.hystrix.enabled=false", "server.port=9998" })
+@TestPropertySource(properties = { "server.port=9998" })
 public class Issue362Tests {
 
 	RestTemplate template = new RestTemplate();
@@ -91,12 +85,12 @@ public class Issue362Tests {
 	Tracing tracer;
 
 	@Autowired
-	ArrayListSpanReporter reporter;
+	TestSpanHandler spans;
 
-	@Before
+	@BeforeEach
 	public void setup() {
 		this.feignComponentAsserter.executedComponents.clear();
-		this.reporter.clear();
+		this.spans.clear();
 	}
 
 	@Test
@@ -109,9 +103,8 @@ public class Issue362Tests {
 		then(response.getBody()).isEqualTo("I'm OK");
 		then(this.feignComponentAsserter.executedComponents).containsEntry(Client.class,
 				true);
-		List<Span> spans = this.reporter.getSpans();
-		then(spans).hasSize(1);
-		then(spans.get(0).tags()).containsEntry("http.path", "/service/ok");
+		then(this.spans).hasSize(1);
+		then(this.spans.get(0).tags()).containsEntry("http.path", "/service/ok");
 	}
 
 	@Test
@@ -128,17 +121,19 @@ public class Issue362Tests {
 		then(this.feignComponentAsserter.executedComponents)
 				.containsEntry(ErrorDecoder.class, true)
 				.containsEntry(Client.class, true);
-		List<Span> spans = this.reporter.getSpans();
 		// retries
-		then(spans).hasSize(5);
-		then(spans.stream().map(span -> span.tags().get("http.status_code"))
+		then(this.spans).hasSize(5);
+		then(this.spans.spans().stream().map(span -> span.tags().get("http.status_code"))
 				.collect(Collectors.toList())).containsOnly("409");
 	}
 
 }
 
 @Configuration
-@EnableAutoConfiguration(exclude = TraceWebServletAutoConfiguration.class)
+@EnableAutoConfiguration(
+		// spring boot test will otherwise instrument the client and server with the
+		// same bean factory which isn't expected
+		excludeName = "org.springframework.cloud.sleuth.instrument.web.TraceWebServletAutoConfiguration")
 @EnableFeignClients(basePackageClasses = { SleuthTestController.class })
 class Application {
 
@@ -168,8 +163,8 @@ class Application {
 	}
 
 	@Bean
-	public Reporter<Span> spanReporter() {
-		return new ArrayListSpanReporter();
+	public SpanHandler testSpanHandler() {
+		return new TestSpanHandler();
 	}
 
 }

@@ -16,26 +16,20 @@
 
 package org.springframework.cloud.sleuth.annotation;
 
-import java.util.List;
-
+import brave.handler.SpanHandler;
 import brave.sampler.Sampler;
-import org.junit.Before;
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import zipkin2.Span;
-import zipkin2.reporter.Reporter;
+import brave.test.TestSpanHandler;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.cloud.sleuth.util.ArrayListSpanReporter;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.test.context.junit4.SpringRunner;
 
 import static org.assertj.core.api.BDDAssertions.then;
 
-@RunWith(SpringRunner.class)
 @SpringBootTest(classes = SleuthSpanCreatorAspectNegativeTests.TestConfiguration.class)
 public class SleuthSpanCreatorAspectNegativeTests {
 
@@ -46,27 +40,26 @@ public class SleuthSpanCreatorAspectNegativeTests {
 	TestBeanInterface annotatedTestBean;
 
 	@Autowired
-	ArrayListSpanReporter reporter;
+	TestSpanHandler spans;
 
-	@Before
+	@BeforeEach
 	public void setup() {
-		this.reporter.clear();
+		this.spans.clear();
 	}
 
 	@Test
 	public void shouldNotCallAdviceForNotAnnotatedBean() {
 		this.testBean.testMethod();
 
-		then(this.reporter.getSpans()).isEmpty();
+		then(this.spans).isEmpty();
 	}
 
 	@Test
 	public void shouldCallAdviceForAnnotatedBean() throws Throwable {
 		this.annotatedTestBean.testMethod();
 
-		List<Span> spans = this.reporter.getSpans();
-		then(spans).hasSize(1);
-		then(spans.get(0).name()).isEqualTo("test-method");
+		then(this.spans).hasSize(1);
+		then(this.spans.get(0).name()).isEqualTo("test-method");
 	}
 
 	protected interface NotAnnotatedTestBeanInterface {
@@ -145,8 +138,8 @@ public class SleuthSpanCreatorAspectNegativeTests {
 	protected static class TestConfiguration {
 
 		@Bean
-		Reporter<Span> spanReporter() {
-			return new ArrayListSpanReporter();
+		SpanHandler testSpanHandler() {
+			return new TestSpanHandler();
 		}
 
 		@Bean

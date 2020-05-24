@@ -32,20 +32,16 @@ import org.springframework.core.env.Environment;
 import org.springframework.util.StringUtils;
 
 /**
- * {@link EndpointLocator} implementation that.
- *
- * <ul>
- * <li><b>serviceName</b> - from {@link ServerProperties} or {@link Registration}</li>
- * <li><b>ip</b> - from {@link ServerProperties}</li>
- * <li><b>port</b> - from lazily assigned port or {@link ServerProperties}</li>
- * </ul>
+ * {@link EndpointLocator} implementation that. <b>serviceName</b> - from
+ * {@link ServerProperties} or {@link Registration} <b>ip</b> - from
+ * {@link ServerProperties} <b>port</b> - from lazily assigned port or
+ * {@link ServerProperties}
  *
  * You can override the name using {@link ZipkinProperties.Service#setName(String)}
  *
  * @author Dave Syer
- * @since 1.0.0
  */
-public class DefaultEndpointLocator implements EndpointLocator,
+class DefaultEndpointLocator implements EndpointLocator,
 		ApplicationListener<ServletWebServerInitializedEvent> {
 
 	private static final Log log = LogFactory.getLog(DefaultEndpointLocator.class);
@@ -64,9 +60,9 @@ public class DefaultEndpointLocator implements EndpointLocator,
 
 	private InetAddress firstNonLoopbackAddress;
 
-	public DefaultEndpointLocator(Registration registration,
-			ServerProperties serverProperties, Environment environment,
-			ZipkinProperties zipkinProperties, InetUtils inetUtils) {
+	DefaultEndpointLocator(Registration registration, ServerProperties serverProperties,
+			Environment environment, ZipkinProperties zipkinProperties,
+			InetUtils inetUtils) {
 		this.registration = registration;
 		this.serverProperties = serverProperties;
 		this.environment = environment;

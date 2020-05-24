@@ -21,30 +21,28 @@ import java.nio.charset.Charset;
 import java.util.HashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import brave.Span;
 import brave.Tracing;
 import brave.http.HttpTracing;
-import brave.propagation.StrictScopeDecorator;
-import brave.propagation.ThreadLocalCurrentTraceContext;
+import brave.propagation.StrictCurrentTraceContext;
+import brave.test.TestSpanHandler;
 import feign.Client;
 import feign.Feign;
 import feign.FeignException;
 import feign.Request;
 import feign.RequestLine;
+import feign.RequestTemplate;
 import feign.Response;
 import okhttp3.mockwebserver.MockWebServer;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.runner.RunWith;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.BDDMockito;
 import org.mockito.Mock;
-import org.mockito.junit.MockitoJUnitRunner;
-import zipkin2.Span;
+import org.mockito.junit.jupiter.MockitoExtension;
 
 import org.springframework.beans.factory.BeanFactory;
-import org.springframework.cloud.sleuth.instrument.web.SleuthHttpParserAccessor;
-import org.springframework.cloud.sleuth.util.ArrayListSpanReporter;
 
 import static org.assertj.core.api.Assertions.failBecauseExceptionWasNotThrown;
 import static org.assertj.core.api.BDDAssertions.then;
@@ -52,34 +50,48 @@ import static org.assertj.core.api.BDDAssertions.then;
 /**
  * @author Marcin Grzejszczak
  */
-@RunWith(MockitoJUnitRunner.class)
+@ExtendWith(MockitoExtension.class)
 public class FeignRetriesTests {
 
-	@Rule
 	public final MockWebServer server = new MockWebServer();
 
-	@Mock
+	@BeforeEach
+	void before() throws IOException {
+		this.server.start();
+	}
+
+	@AfterEach
+	void after() throws IOException {
+		this.server.close();
+	}
+
+	@Mock(lenient = true)
 	BeanFactory beanFactory;
 
-	ArrayListSpanReporter reporter = new ArrayListSpanReporter();
+	StrictCurrentTraceContext currentTraceContext = StrictCurrentTraceContext.create();
 
-	Tracing tracing = Tracing.newBuilder()
-			.currentTraceContext(ThreadLocalCurrentTraceContext.newBuilder()
-					.addScopeDecorator(StrictScopeDecorator.create()).build())
-			.spanReporter(this.reporter).build();
+	TestSpanHandler spans = new TestSpanHandler();
 
-	HttpTracing httpTracing = HttpTracing.newBuilder(this.tracing)
-			.clientParser(SleuthHttpParserAccessor.getClient()).build();
+	Tracing tracing = Tracing.newBuilder().currentTraceContext(this.currentTraceContext)
+			.addSpanHandler(this.spans).build();
 
-	@Before
-	@After
+	HttpTracing httpTracing = HttpTracing.newBuilder(this.tracing).build();
+
+	@BeforeEach
+	@AfterEach
 	public void setup() {
 		BDDMockito.given(this.beanFactory.getBean(HttpTracing.class))
 				.willReturn(this.httpTracing);
 	}
 
+	@AfterEach
+	public void close() {
+		this.tracing.close();
+		this.currentTraceContext.close();
+	}
+
 	@Test
-	public void testRetriedWhenExceededNumberOfRetries() throws Exception {
+	public void testRetriedWhenExceededNumberOfRetries() {
 		Client client = (request, options) -> {
 			throw new IOException();
 		};
@@ -98,7 +110,7 @@ public class FeignRetriesTests {
 	}
 
 	@Test
-	public void testRetriedWhenRequestEventuallyIsSent() throws Exception {
+	public void testRetriedWhenRequestEventuallyIsSent() {
 		String url = "http://localhost:" + this.server.getPort();
 		final AtomicInteger atomicInteger = new AtomicInteger();
 		// Client to simulate a retry scenario
@@ -112,27 +124,22 @@ public class FeignRetriesTests {
 				return Response.builder().status(200).reason("OK")
 						.headers(new HashMap<>()).body("OK", Charset.defaultCharset())
 						.request(Request.create(Request.HttpMethod.POST, "/foo",
-								new HashMap<>(), Request.Body.empty()))
+								new HashMap<>(), Request.Body.empty(),
+								new RequestTemplate()))
 						.build();
 			}
 		};
 		TestInterface api = Feign.builder()
-				.client(new TracingFeignClient(this.httpTracing, new Client() {
-					@Override
-					public Response execute(Request request, Request.Options options)
-							throws IOException {
-						atomicInteger.incrementAndGet();
-						return client.execute(request, options);
-					}
+				.client(new TracingFeignClient(this.httpTracing, (request, options) -> {
+					atomicInteger.incrementAndGet();
+					return client.execute(request, options);
 				})).target(TestInterface.class, url);
 
 		then(api.decodedPost()).isEqualTo("OK");
 		// request interception should take place only twice (1st request & 2nd retry)
 		then(atomicInteger.get()).isEqualTo(2);
-		then(this.reporter.getSpans().get(0).tags()).containsEntry("error",
-				"IOException");
-		then(this.reporter.getSpans().get(1).kind().ordinal())
-				.isEqualTo(Span.Kind.CLIENT.ordinal());
+		then(this.spans.get(0).error()).isInstanceOf(IOException.class);
+		then(this.spans.get(1).kind()).isEqualTo(Span.Kind.CLIENT);
 	}
 
 	interface TestInterface {

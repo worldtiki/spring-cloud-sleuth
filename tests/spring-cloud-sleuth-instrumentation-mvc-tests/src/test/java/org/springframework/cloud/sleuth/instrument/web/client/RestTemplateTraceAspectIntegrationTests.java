@@ -21,27 +21,27 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.stream.Collectors;
 
+import brave.Span;
 import brave.Tracing;
+import brave.handler.MutableSpan;
+import brave.handler.SpanHandler;
+import brave.propagation.CurrentTraceContext;
 import brave.sampler.Sampler;
 import brave.spring.web.TracingAsyncClientHttpRequestInterceptor;
+import brave.test.TestSpanHandler;
 import org.awaitility.Awaitility;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import zipkin2.Span;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.cloud.sleuth.instrument.web.TraceWebServletAutoConfiguration;
-import org.springframework.cloud.sleuth.util.ArrayListSpanReporter;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.core.env.Environment;
 import org.springframework.http.MediaType;
 import org.springframework.test.annotation.DirtiesContext;
-import org.springframework.test.context.junit4.SpringJUnit4ClassRunner;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.web.servlet.request.MockMvcRequestBuilders;
@@ -63,7 +63,6 @@ import static org.springframework.test.web.servlet.result.MockMvcResultHandlers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.request;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-@RunWith(SpringJUnit4ClassRunner.class)
 @SpringBootTest(classes = RestTemplateTraceAspectIntegrationTests.Config.class,
 		webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
 		properties = "spring.sleuth.web.client.skipPattern=/issue.*")
@@ -77,25 +76,28 @@ public class RestTemplateTraceAspectIntegrationTests {
 	AspectTestingController controller;
 
 	@Autowired
+	CurrentTraceContext currentTraceContext;
+
+	@Autowired
 	Tracing tracer;
 
 	@Autowired
-	ArrayListSpanReporter reporter;
+	TestSpanHandler spans;
 
 	@Autowired
 	RestTemplate restTemplate;
 
 	private MockMvc mockMvc;
 
-	@Before
+	@BeforeEach
 	public void init() {
 		this.mockMvc = MockMvcBuilders.webAppContextSetup(this.context).build();
 		this.controller.reset();
-		this.reporter.clear();
+		this.spans.clear();
 	}
 
-	@Before
-	@After
+	@BeforeEach
+	@AfterEach
 	public void verify() {
 		then(this.tracer.tracer().currentSpan()).isNull();
 	}
@@ -142,8 +144,8 @@ public class RestTemplateTraceAspectIntegrationTests {
 			throws Exception {
 		whenARequestIsSentToASyncEndpointThatShouldBeFilteredOut();
 
-		then(Tracing.current().tracer().currentSpan()).isNull();
-		then(this.reporter.getSpans()).isEmpty();
+		then(this.currentTraceContext.get()).isNull();
+		then(this.spans).isEmpty();
 	}
 
 	private void whenARequestIsSentToAnAsyncRestTemplateEndpoint() throws Exception {
@@ -170,7 +172,7 @@ public class RestTemplateTraceAspectIntegrationTests {
 	// Brave was never designed to run tests of server and client in one test
 	// that's why we have to pick only CLIENT side
 	private void thenClientKindIsReported() {
-		assertThat(this.reporter.getSpans().stream().map(Span::kind)
+		assertThat(this.spans.spans().stream().map(MutableSpan::kind)
 				.collect(Collectors.toList())).contains(Span.Kind.CLIENT);
 	}
 
@@ -183,7 +185,10 @@ public class RestTemplateTraceAspectIntegrationTests {
 				.andExpect(status().isOk());
 	}
 
-	@EnableAutoConfiguration(exclude = TraceWebServletAutoConfiguration.class)
+	@EnableAutoConfiguration(
+			// spring boot test will otherwise instrument the client and server with the
+			// same bean factory which isn't expected
+			excludeName = "org.springframework.cloud.sleuth.instrument.web.TraceWebServletAutoConfiguration")
 	@Import(AspectTestingController.class)
 	public static class Config {
 
@@ -206,8 +211,8 @@ public class RestTemplateTraceAspectIntegrationTests {
 		}
 
 		@Bean
-		ArrayListSpanReporter reporter() {
-			return new ArrayListSpanReporter();
+		SpanHandler testSpanHandler() {
+			return new TestSpanHandler();
 		}
 
 	}

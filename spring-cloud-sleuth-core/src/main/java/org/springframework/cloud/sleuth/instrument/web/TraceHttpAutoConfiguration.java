@@ -16,27 +16,27 @@
 
 package org.springframework.cloud.sleuth.instrument.web;
 
-import java.util.ArrayList;
 import java.util.List;
+import java.util.regex.Pattern;
 
-import brave.ErrorParser;
 import brave.Tracing;
-import brave.http.HttpClientParser;
 import brave.http.HttpRequest;
-import brave.http.HttpSampler;
-import brave.http.HttpServerParser;
+import brave.http.HttpRequestParser;
+import brave.http.HttpResponseParser;
 import brave.http.HttpTracing;
 import brave.http.HttpTracingCustomizer;
 import brave.sampler.SamplerFunction;
+import brave.sampler.SamplerFunctions;
 
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.AutoConfigureAfter;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.cloud.sleuth.autoconfig.TraceAutoConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Import;
 import org.springframework.core.Ordered;
 import org.springframework.lang.Nullable;
 
@@ -47,97 +47,101 @@ import org.springframework.lang.Nullable;
  * @author Marcin Grzejszczak
  * @since 2.0.0
  */
-@Configuration
-@ConditionalOnBean(TraceWebAutoConfiguration.class)
-@ConditionalOnProperty(name = "spring.sleuth.http.enabled", havingValue = "true",
-		matchIfMissing = true)
-@AutoConfigureAfter(TraceWebAutoConfiguration.class)
-@EnableConfigurationProperties({ TraceKeys.class, SleuthHttpLegacyProperties.class })
+@Configuration(proxyBeanMethods = false)
+// This was formerly conditional on TraceWebAutoConfiguration, which was
+// conditional on "spring.sleuth.web.enabled". As this is conditional on
+// "spring.sleuth.http.enabled", to be compatible with old behavior we have
+// to be conditional on two properties.
+@ConditionalOnProperty(
+		name = { "spring.sleuth.http.enabled", "spring.sleuth.web.enabled" },
+		havingValue = "true", matchIfMissing = true)
+@ConditionalOnBean(Tracing.class)
+@ConditionalOnClass(HttpTracing.class)
+@AutoConfigureAfter(TraceAutoConfiguration.class)
+@Import(SkipPatternConfiguration.class)
+// public allows @AutoConfigureAfter(TraceHttpAutoConfiguration)
+// for components needing HttpTracing
 public class TraceHttpAutoConfiguration {
 
 	static final int TRACING_FILTER_ORDER = Ordered.HIGHEST_PRECEDENCE + 5;
 
-	@Autowired(required = false)
-	List<HttpTracingCustomizer> httpTracingCustomizers = new ArrayList<>();
-
 	@Bean
 	@ConditionalOnMissingBean
 	// NOTE: stable bean name as might be used outside sleuth
-	HttpTracing httpTracing(Tracing tracing, SkipPatternProvider provider,
-			HttpClientParser clientParser, HttpServerParser serverParser,
+	HttpTracing httpTracing(Tracing tracing, @Nullable SkipPatternProvider provider,
+			@Nullable @HttpClientRequestParser HttpRequestParser httpClientRequestParser,
+			@Nullable @HttpClientResponseParser HttpResponseParser httpClientResponseParser,
+			@Nullable brave.http.HttpClientParser clientParser,
+			@Nullable @HttpServerRequestParser HttpRequestParser httpServerRequestParser,
+			@Nullable @HttpServerResponseParser HttpResponseParser httpServerResponseParser,
+			@Nullable brave.http.HttpServerParser serverParser,
 			@HttpClientSampler SamplerFunction<HttpRequest> httpClientSampler,
-			@Nullable @ServerSampler HttpSampler serverSampler,
-			@Nullable @HttpServerSampler SamplerFunction<HttpRequest> httpServerSampler) {
-		if (httpServerSampler == null) {
-			httpServerSampler = serverSampler;
-		}
+			@Nullable @HttpServerSampler SamplerFunction<HttpRequest> httpServerSampler,
+			@Nullable List<HttpTracingCustomizer> httpTracingCustomizers) {
 		SamplerFunction<HttpRequest> combinedSampler = combineUserProvidedSamplerWithSkipPatternSampler(
 				httpServerSampler, provider);
 		HttpTracing.Builder builder = HttpTracing.newBuilder(tracing)
-				.clientParser(clientParser).serverParser(serverParser)
 				.clientSampler(httpClientSampler).serverSampler(combinedSampler);
-		for (HttpTracingCustomizer customizer : this.httpTracingCustomizers) {
-			customizer.customize(builder);
+
+		if (httpClientRequestParser != null || httpClientResponseParser != null) {
+			if (httpClientRequestParser != null) {
+				builder.clientRequestParser(httpClientRequestParser);
+			}
+			if (httpClientResponseParser != null) {
+				builder.clientResponseParser(httpClientResponseParser);
+			}
+		}
+		else if (clientParser != null) { // consider deprecated last
+			builder.clientParser(clientParser);
+		}
+
+		if (httpServerRequestParser != null || httpServerResponseParser != null) {
+			if (httpServerRequestParser != null) {
+				builder.serverRequestParser(httpServerRequestParser);
+			}
+			if (httpServerResponseParser != null) {
+				builder.serverResponseParser(httpServerResponseParser);
+			}
+		}
+		else if (serverParser != null) { // consider deprecated last
+			builder.serverParser(serverParser);
+		}
+
+		if (httpTracingCustomizers != null) {
+			for (HttpTracingCustomizer customizer : httpTracingCustomizers) {
+				customizer.customize(builder);
+			}
 		}
 		return builder.build();
 	}
 
 	private SamplerFunction<HttpRequest> combineUserProvidedSamplerWithSkipPatternSampler(
 			@Nullable SamplerFunction<HttpRequest> serverSampler,
-			SkipPatternProvider provider) {
-		SkipPatternHttpServerSampler skipPatternSampler = new SkipPatternHttpServerSampler(
-				provider);
-		if (serverSampler == null) {
+			@Nullable SkipPatternProvider provider) {
+		SamplerFunction<HttpRequest> skipPatternSampler = provider != null
+				? new SkipPatternHttpServerSampler(provider) : null;
+		if (serverSampler == null && skipPatternSampler == null) {
+			return SamplerFunctions.deferDecision();
+		}
+		else if (serverSampler == null) {
 			return skipPatternSampler;
+		}
+		else if (skipPatternSampler == null) {
+			return serverSampler;
 		}
 		return new CompositeHttpSampler(skipPatternSampler, serverSampler);
 	}
 
 	@Bean
-	@ConditionalOnProperty(name = "spring.sleuth.http.legacy.enabled",
-			havingValue = "true")
-	HttpClientParser sleuthHttpClientParser(TraceKeys traceKeys) {
-		return new SleuthHttpClientParser(traceKeys);
-	}
-
-	@Bean
-	@ConditionalOnProperty(name = "spring.sleuth.http.legacy.enabled",
-			havingValue = "false", matchIfMissing = true)
-	@ConditionalOnMissingBean
-	HttpClientParser httpClientParser(ErrorParser errorParser) {
-		return new HttpClientParser() {
-			@Override
-			protected ErrorParser errorParser() {
-				return errorParser;
-			}
-		};
-	}
-
-	@Bean
-	@ConditionalOnProperty(name = "spring.sleuth.http.legacy.enabled",
-			havingValue = "true")
-	HttpServerParser sleuthHttpServerParser(TraceKeys traceKeys,
-			ErrorParser errorParser) {
-		return new SleuthHttpServerParser(traceKeys, errorParser);
-	}
-
-	@Bean
-	@ConditionalOnProperty(name = "spring.sleuth.http.legacy.enabled",
-			havingValue = "false", matchIfMissing = true)
-	@ConditionalOnMissingBean
-	HttpServerParser defaultHttpServerParser() {
-		return new HttpServerParser();
-	}
-
-	@Bean
 	@ConditionalOnMissingBean(name = HttpClientSampler.NAME)
 	SamplerFunction<HttpRequest> sleuthHttpClientSampler(
-			@Nullable @ClientSampler HttpSampler sleuthClientSampler,
 			SleuthWebProperties sleuthWebProperties) {
-		if (sleuthClientSampler != null) {
-			return sleuthClientSampler;
+		String skipPattern = sleuthWebProperties.getClient().getSkipPattern();
+		if (skipPattern == null) {
+			return SamplerFunctions.deferDecision();
 		}
-		return new SkipPatternHttpClientSampler(sleuthWebProperties);
+
+		return new SkipPatternHttpClientSampler(Pattern.compile(skipPattern));
 	}
 
 }
@@ -147,7 +151,7 @@ public class TraceHttpAutoConfiguration {
  *
  * @author Adrian Cole
  */
-class CompositeHttpSampler implements SamplerFunction<HttpRequest> {
+final class CompositeHttpSampler implements SamplerFunction<HttpRequest> {
 
 	final SamplerFunction<HttpRequest> left;
 
@@ -188,21 +192,32 @@ class CompositeHttpSampler implements SamplerFunction<HttpRequest> {
  *
  * @author Marcin Grzejszczak
  */
-class SkipPatternHttpClientSampler implements SamplerFunction<HttpRequest> {
+final class SkipPatternHttpServerSampler extends SkipPatternSampler {
 
-	private final SleuthWebProperties properties;
+	private final SkipPatternProvider provider;
 
-	SkipPatternHttpClientSampler(SleuthWebProperties properties) {
-		this.properties = properties;
+	SkipPatternHttpServerSampler(SkipPatternProvider provider) {
+		this.provider = provider;
 	}
 
 	@Override
-	public Boolean trySample(HttpRequest request) {
-		String path = request.path();
-		if (path == null) {
-			return null;
-		}
-		return path.matches(this.properties.getClient().getSkipPattern()) ? false : null;
+	Pattern getPattern() {
+		return this.provider.skipPattern();
+	}
+
+}
+
+final class SkipPatternHttpClientSampler extends SkipPatternSampler {
+
+	private final Pattern skipPattern;
+
+	SkipPatternHttpClientSampler(Pattern skipPattern) {
+		this.skipPattern = skipPattern;
+	}
+
+	@Override
+	Pattern getPattern() {
+		return skipPattern;
 	}
 
 }

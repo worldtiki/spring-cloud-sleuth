@@ -20,7 +20,7 @@ import brave.rpc.RpcRequest;
 import brave.rpc.RpcTracing;
 import brave.sampler.SamplerFunction;
 import brave.sampler.SamplerFunctions;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
@@ -77,7 +77,6 @@ public class TraceRpcAutoConfigurationTests {
 	private ApplicationContextRunner contextRunner(String... propertyValues) {
 		return new ApplicationContextRunner().withPropertyValues(propertyValues)
 				.withConfiguration(AutoConfigurations.of(TraceAutoConfiguration.class,
-						TraceRpcAutoConfiguration.class,
 						TraceRpcAutoConfiguration.class));
 	}
 

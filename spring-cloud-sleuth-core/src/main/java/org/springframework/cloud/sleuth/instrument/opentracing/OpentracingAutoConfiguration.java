@@ -20,11 +20,13 @@ import brave.Tracing;
 import brave.opentracing.BraveTracer;
 import io.opentracing.Tracer;
 
+import org.springframework.boot.autoconfigure.AutoConfigureAfter;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.cloud.sleuth.autoconfig.TraceAutoConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -36,12 +38,13 @@ import org.springframework.context.annotation.Configuration;
  * @author Marcin Grzejszczak
  * @since 2.0.0
  */
-@Configuration
+@Configuration(proxyBeanMethods = false)
 @ConditionalOnProperty(value = "spring.sleuth.opentracing.enabled", matchIfMissing = true)
 @ConditionalOnBean(Tracing.class)
 @ConditionalOnClass(Tracer.class)
+@AutoConfigureAfter(TraceAutoConfiguration.class)
 @EnableConfigurationProperties(SleuthOpentracingProperties.class)
-public class OpentracingAutoConfiguration {
+class OpentracingAutoConfiguration {
 
 	@Bean
 	@ConditionalOnMissingBean

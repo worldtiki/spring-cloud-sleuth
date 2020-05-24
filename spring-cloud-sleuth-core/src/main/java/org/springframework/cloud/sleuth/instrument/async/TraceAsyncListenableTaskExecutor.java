@@ -33,6 +33,7 @@ import org.springframework.util.concurrent.ListenableFuture;
  * @see brave.propagation.CurrentTraceContext#wrap(Runnable)
  * @see brave.propagation.CurrentTraceContext#wrap(Callable)
  */
+// public as most types in this package were documented for use
 public class TraceAsyncListenableTaskExecutor implements AsyncListenableTaskExecutor {
 
 	private final AsyncListenableTaskExecutor delegate;

@@ -25,7 +25,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * @since 2.0.2
  */
 @ConfigurationProperties("spring.sleuth.feign")
-public class SleuthFeignProperties {
+class SleuthFeignProperties {
 
 	/**
 	 * When true enables instrumentation for feign.

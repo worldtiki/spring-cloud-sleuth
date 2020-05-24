@@ -16,22 +16,19 @@
 
 package org.springframework.cloud.sleuth.instrument.web.client.feign;
 
-import java.io.IOException;
-
 import brave.Tracing;
 import brave.http.HttpTracing;
-import brave.propagation.StrictScopeDecorator;
-import brave.propagation.ThreadLocalCurrentTraceContext;
+import brave.propagation.StrictCurrentTraceContext;
 import feign.Client;
 import org.aspectj.lang.ProceedingJoinPoint;
-import org.junit.Before;
-import org.junit.Test;
-import org.junit.runner.RunWith;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
-import org.mockito.junit.MockitoJUnitRunner;
+import org.mockito.junit.jupiter.MockitoExtension;
 
 import org.springframework.beans.factory.BeanFactory;
-import org.springframework.cloud.sleuth.instrument.web.SleuthHttpParserAccessor;
 
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.never;
@@ -40,7 +37,7 @@ import static org.mockito.Mockito.verify;
 /**
  * @author Marcin Grzejszczak
  */
-@RunWith(MockitoJUnitRunner.class)
+@ExtendWith(MockitoExtension.class)
 public class TraceFeignAspectTests {
 
 	@Mock
@@ -52,28 +49,29 @@ public class TraceFeignAspectTests {
 	@Mock
 	ProceedingJoinPoint pjp;
 
-	@Mock
-	TraceLoadBalancerFeignClient traceLoadBalancerFeignClient;
+	StrictCurrentTraceContext currentTraceContext = StrictCurrentTraceContext.create();
 
-	Tracing tracing = Tracing.newBuilder()
-			.currentTraceContext(ThreadLocalCurrentTraceContext.newBuilder()
-					.addScopeDecorator(StrictScopeDecorator.create()).build())
+	Tracing tracing = Tracing.newBuilder().currentTraceContext(currentTraceContext)
 			.build();
 
-	HttpTracing httpTracing = HttpTracing.newBuilder(this.tracing)
-			.clientParser(SleuthHttpParserAccessor.getClient()).build();
+	HttpTracing httpTracing = HttpTracing.newBuilder(this.tracing).build();
 
 	TraceFeignAspect traceFeignAspect;
 
-	@Before
+	@BeforeEach
 	public void setup() {
 		this.traceFeignAspect = new TraceFeignAspect(this.beanFactory) {
 			@Override
-			Object executeTraceFeignClient(Object bean, ProceedingJoinPoint pjp)
-					throws IOException {
+			Object executeTraceFeignClient(Object bean, ProceedingJoinPoint pjp) {
 				return null;
 			}
 		};
+	}
+
+	@AfterEach
+	public void close() {
+		this.tracing.close();
+		this.currentTraceContext.close();
 	}
 
 	@Test
@@ -90,16 +88,6 @@ public class TraceFeignAspectTests {
 			throws Throwable {
 		given(this.pjp.getTarget())
 				.willReturn(new TracingFeignClient(this.httpTracing, this.client));
-
-		this.traceFeignAspect.feignClientWasCalled(this.pjp);
-
-		verify(this.pjp).proceed();
-	}
-
-	@Test
-	public void should_not_wrap_traced_load_balancer_feign_client_in_trace_representation()
-			throws Throwable {
-		given(this.pjp.getTarget()).willReturn(this.traceLoadBalancerFeignClient);
 
 		this.traceFeignAspect.feignClientWasCalled(this.pjp);
 

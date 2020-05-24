@@ -17,60 +17,70 @@
 package org.springframework.cloud.sleuth.instrument.web.client.feign;
 
 import java.io.IOException;
-import java.nio.charset.Charset;
 import java.util.HashMap;
 
 import brave.Span;
 import brave.Tracer;
 import brave.Tracing;
 import brave.http.HttpTracing;
-import brave.propagation.StrictScopeDecorator;
-import brave.propagation.ThreadLocalCurrentTraceContext;
+import brave.propagation.StrictCurrentTraceContext;
+import brave.test.TestSpanHandler;
 import feign.Client;
 import feign.Request;
+import feign.RequestTemplate;
 import org.assertj.core.api.BDDAssertions;
-import org.junit.Before;
-import org.junit.Test;
-import org.junit.runner.RunWith;
+import org.junit.Assert;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.BDDMockito;
 import org.mockito.Mock;
-import org.mockito.junit.MockitoJUnitRunner;
-
-import org.springframework.beans.factory.BeanFactory;
-import org.springframework.cloud.sleuth.instrument.web.SleuthHttpParserAccessor;
-import org.springframework.cloud.sleuth.util.ArrayListSpanReporter;
+import org.mockito.invocation.InvocationOnMock;
+import org.mockito.junit.jupiter.MockitoExtension;
+import org.mockito.stubbing.Answer;
 
 import static org.assertj.core.api.BDDAssertions.then;
 
 /**
  * @author Marcin Grzejszczak
+ * @author Hash.Jang
  */
-@RunWith(MockitoJUnitRunner.class)
+@ExtendWith(MockitoExtension.class)
 public class TracingFeignClientTests {
 
-	ArrayListSpanReporter reporter = new ArrayListSpanReporter();
+	RequestTemplate requestTemplate = new RequestTemplate();
 
-	@Mock
-	BeanFactory beanFactory;
+	Request request = Request.create(Request.HttpMethod.GET, "https://foo",
+			new HashMap<>(), null, null, requestTemplate);
 
-	Tracing tracing = Tracing.newBuilder()
-			.currentTraceContext(ThreadLocalCurrentTraceContext.newBuilder()
-					.addScopeDecorator(StrictScopeDecorator.create()).build())
-			.spanReporter(this.reporter).build();
+	Request.Options options = new Request.Options();
+
+	StrictCurrentTraceContext currentTraceContext = StrictCurrentTraceContext.create();
+
+	TestSpanHandler spans = new TestSpanHandler();
+
+	Tracing tracing = Tracing.newBuilder().currentTraceContext(currentTraceContext)
+			.addSpanHandler(spans).build();
 
 	Tracer tracer = this.tracing.tracer();
 
-	HttpTracing httpTracing = HttpTracing.newBuilder(this.tracing)
-			.clientParser(SleuthHttpParserAccessor.getClient()).build();
+	HttpTracing httpTracing = HttpTracing.newBuilder(this.tracing).build();
 
 	@Mock
 	Client client;
 
 	Client traceFeignClient;
 
-	@Before
+	@BeforeEach
 	public void setup() {
 		this.traceFeignClient = TracingFeignClient.create(this.httpTracing, this.client);
+	}
+
+	@AfterEach
+	public void close() {
+		this.tracing.close();
+		this.currentTraceContext.close();
 	}
 
 	@Test
@@ -78,32 +88,24 @@ public class TracingFeignClientTests {
 		Span span = this.tracer.nextSpan().name("foo");
 
 		try (Tracer.SpanInScope ws = this.tracer.withSpanInScope(span.start())) {
-			this.traceFeignClient
-					.execute(
-							Request.create("GET", "https://foo", new HashMap<>(),
-									"".getBytes(), Charset.defaultCharset()),
-							new Request.Options());
+			this.traceFeignClient.execute(this.request, this.options);
 		}
 		finally {
 			span.finish();
 		}
 
-		then(this.reporter.getSpans().get(0)).extracting("kind.ordinal")
-				.contains(Span.Kind.CLIENT.ordinal());
+		then(spans.get(0).kind()).isEqualTo(Span.Kind.CLIENT);
 	}
 
 	@Test
 	public void should_log_error_when_exception_thrown() throws IOException {
+		RuntimeException error = new RuntimeException("exception has occurred");
 		Span span = this.tracer.nextSpan().name("foo");
 		BDDMockito.given(this.client.execute(BDDMockito.any(), BDDMockito.any()))
-				.willThrow(new RuntimeException("exception has occurred"));
+				.willThrow(error);
 
 		try (Tracer.SpanInScope ws = this.tracer.withSpanInScope(span.start())) {
-			this.traceFeignClient
-					.execute(
-							Request.create("GET", "https://foo", new HashMap<>(),
-									"".getBytes(), Charset.defaultCharset()),
-							new Request.Options());
+			this.traceFeignClient.execute(this.request, this.options);
 			BDDAssertions.fail("Exception should have been thrown");
 		}
 		catch (Exception e) {
@@ -112,29 +114,22 @@ public class TracingFeignClientTests {
 			span.finish();
 		}
 
-		then(this.reporter.getSpans().get(0)).extracting("kind.ordinal")
-				.contains(Span.Kind.CLIENT.ordinal());
-		then(this.reporter.getSpans().get(0).tags()).containsEntry("error",
-				"exception has occurred");
+		then(this.spans.get(0).kind()).isEqualTo(Span.Kind.CLIENT);
+		then(this.spans.get(0).error()).isSameAs(error);
 	}
 
 	@Test
-	public void should_shorten_the_span_name() throws IOException {
-		this.traceFeignClient
-				.execute(
-						Request.create("GET", "https://foo/" + bigName(), new HashMap<>(),
-								"".getBytes(), Charset.defaultCharset()),
-						new Request.Options());
-
-		then(this.reporter.getSpans().get(0).name()).hasSize(50);
-	}
-
-	private String bigName() {
-		StringBuilder sb = new StringBuilder();
-		for (int i = 0; i < 60; i++) {
-			sb.append("a");
-		}
-		return sb.toString();
+	public void keep_requestTemplate() throws IOException {
+		BDDMockito.given(this.client.execute(BDDMockito.any(), BDDMockito.any()))
+				.willAnswer(new Answer() {
+					public Object answer(InvocationOnMock invocation) {
+						Object[] args = invocation.getArguments();
+						Assert.assertEquals(((Request) args[0]).requestTemplate(),
+								requestTemplate);
+						return null;
+					}
+				});
+		this.traceFeignClient.execute(this.request, this.options);
 	}
 
 }

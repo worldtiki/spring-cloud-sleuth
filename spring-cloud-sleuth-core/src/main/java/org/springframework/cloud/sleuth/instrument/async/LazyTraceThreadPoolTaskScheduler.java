@@ -35,8 +35,8 @@ import org.apache.commons.logging.LogFactory;
 
 import org.springframework.beans.factory.BeanFactory;
 import org.springframework.beans.factory.NoSuchBeanDefinitionException;
-import org.springframework.cloud.sleuth.DefaultSpanNamer;
 import org.springframework.cloud.sleuth.SpanNamer;
+import org.springframework.cloud.sleuth.internal.DefaultSpanNamer;
 import org.springframework.lang.Nullable;
 import org.springframework.scheduling.Trigger;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
@@ -184,7 +184,7 @@ class LazyTraceThreadPoolTaskScheduler extends ThreadPoolTaskScheduler {
 
 	@Override
 	public void execute(Runnable task) {
-		this.delegate.execute(task);
+		this.delegate.execute(new TraceRunnable(tracing(), spanNamer(), task));
 	}
 
 	@Override

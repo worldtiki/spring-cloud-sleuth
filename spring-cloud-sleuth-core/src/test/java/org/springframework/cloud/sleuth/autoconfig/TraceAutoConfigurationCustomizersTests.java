@@ -17,21 +17,24 @@
 package org.springframework.cloud.sleuth.autoconfig;
 
 import brave.TracingCustomizer;
+import brave.baggage.BaggagePropagationCustomizer;
 import brave.http.HttpTracingCustomizer;
+import brave.messaging.MessagingTracingCustomizer;
 import brave.propagation.CurrentTraceContextCustomizer;
-import brave.propagation.ExtraFieldCustomizer;
+import brave.propagation.Propagation;
 import brave.rpc.RpcTracingCustomizer;
 import brave.sampler.Sampler;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.assertj.AssertableApplicationContext;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.cloud.sleuth.instrument.messaging.TraceMessagingAutoConfiguration;
 import org.springframework.cloud.sleuth.instrument.rpc.TraceRpcAutoConfiguration;
 import org.springframework.cloud.sleuth.instrument.web.TraceHttpAutoConfiguration;
-import org.springframework.cloud.sleuth.instrument.web.TraceWebAutoConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.messaging.support.MessageHeaderAccessor;
 
 import static org.assertj.core.api.BDDAssertions.then;
 
@@ -39,13 +42,15 @@ public class TraceAutoConfigurationCustomizersTests {
 
 	private final ApplicationContextRunner contextRunner = new ApplicationContextRunner()
 			.withConfiguration(AutoConfigurations.of(TraceAutoConfiguration.class,
-					TraceWebAutoConfiguration.class, TraceHttpAutoConfiguration.class,
-					TraceRpcAutoConfiguration.class))
+					TraceHttpAutoConfiguration.class, TraceRpcAutoConfiguration.class,
+					TraceMessagingAutoConfiguration.class,
+					FakeSpringMessagingAutoConfiguration.class))
 			.withUserConfiguration(Customizers.class);
 
 	@Test
 	public void should_apply_customizers() {
-		this.contextRunner.withPropertyValues("spring.sleuth.baggage-keys=my-baggage")
+		this.contextRunner
+				.withPropertyValues("spring.sleuth.baggage.remote-fields=country-code")
 				.run((context) -> {
 					Customizers bean = context.getBean(Customizers.class);
 
@@ -55,7 +60,7 @@ public class TraceAutoConfigurationCustomizersTests {
 	}
 
 	@Test
-	public void should_apply_extra_field_customizer_when_no_extra_properties_are_defined() {
+	public void should_apply_baggage_customizer_when_no_baggage_properties_are_defined() {
 		this.contextRunner.run((context) -> {
 			Customizers bean = context.getBean(Customizers.class);
 
@@ -70,9 +75,20 @@ public class TraceAutoConfigurationCustomizersTests {
 	private void shouldApplyCustomizations(Customizers bean) {
 		then(bean.tracingCustomizerApplied).isTrue();
 		then(bean.contextCustomizerApplied).isTrue();
-		then(bean.extraFieldCustomizerApplied).isTrue();
+		then(bean.baggagePropagationCustomizerApplied).isTrue();
 		then(bean.httpCustomizerApplied).isTrue();
 		then(bean.rpcCustomizerApplied).isTrue();
+	}
+
+	// SQS has a dependency on the getter and this is better than exposing things public
+	@Configuration
+	static class FakeSpringMessagingAutoConfiguration {
+
+		@Bean
+		Propagation.Getter<MessageHeaderAccessor, String> traceMessagePropagationGetter() {
+			return (headers, key) -> null;
+		}
+
 	}
 
 	@Configuration
@@ -82,11 +98,13 @@ public class TraceAutoConfigurationCustomizersTests {
 
 		boolean contextCustomizerApplied;
 
-		boolean extraFieldCustomizerApplied;
+		boolean baggagePropagationCustomizerApplied;
 
 		boolean httpCustomizerApplied;
 
 		boolean rpcCustomizerApplied;
+
+		boolean messagingCustomizerApplied;
 
 		@Bean
 		TracingCustomizer sleuthTracingCustomizer() {
@@ -99,13 +117,18 @@ public class TraceAutoConfigurationCustomizersTests {
 		}
 
 		@Bean
-		ExtraFieldCustomizer sleuthExtraFieldCustomizer() {
-			return builder -> extraFieldCustomizerApplied = true;
+		BaggagePropagationCustomizer sleuthBaggagePropagationCustomizer() {
+			return builder -> baggagePropagationCustomizerApplied = true;
 		}
 
 		@Bean
 		HttpTracingCustomizer sleuthHttpTracingCustomizer() {
 			return builder -> httpCustomizerApplied = true;
+		}
+
+		@Bean
+		MessagingTracingCustomizer sleuthMessagingCustomizer() {
+			return builder -> messagingCustomizerApplied = true;
 		}
 
 		@Bean

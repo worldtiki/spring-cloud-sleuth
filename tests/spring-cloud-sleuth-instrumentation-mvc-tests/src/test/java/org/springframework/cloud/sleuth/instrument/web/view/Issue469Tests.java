@@ -16,20 +16,17 @@
 
 package org.springframework.cloud.sleuth.instrument.web.view;
 
-import org.junit.Test;
-import org.junit.runner.RunWith;
+import brave.test.TestSpanHandler;
+import org.junit.jupiter.api.Test;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.cloud.sleuth.util.ArrayListSpanReporter;
 import org.springframework.core.env.Environment;
 import org.springframework.test.context.TestPropertySource;
-import org.springframework.test.context.junit4.SpringRunner;
 import org.springframework.web.client.RestTemplate;
 
 import static org.assertj.core.api.BDDAssertions.then;
 
-@RunWith(SpringRunner.class)
 @SpringBootTest(classes = Issue469.class,
 		webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @TestPropertySource(properties = { "spring.mvc.view.prefix=/WEB-INF/jsp/",
@@ -37,7 +34,7 @@ import static org.assertj.core.api.BDDAssertions.then;
 public class Issue469Tests {
 
 	@Autowired
-	ArrayListSpanReporter reporter;
+	TestSpanHandler spans;
 
 	@Autowired
 	Environment environment;
@@ -45,8 +42,7 @@ public class Issue469Tests {
 	RestTemplate restTemplate = new RestTemplate();
 
 	@Test
-	public void should_not_result_in_tracing_exceptions_when_using_view_controllers()
-			throws Exception {
+	public void should_not_result_in_tracing_exceptions_when_using_view_controllers() {
 		try {
 			this.restTemplate.getForObject("http://localhost:" + port() + "/welcome",
 					String.class);
@@ -56,7 +52,7 @@ public class Issue469Tests {
 			then(e).hasMessageContaining("404");
 		}
 
-		then(this.reporter.getSpans()).isNotEmpty();
+		then(this.spans).isNotEmpty();
 	}
 
 	private int port() {

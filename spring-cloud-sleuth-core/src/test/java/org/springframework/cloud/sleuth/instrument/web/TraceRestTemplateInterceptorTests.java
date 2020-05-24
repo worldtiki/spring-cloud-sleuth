@@ -18,24 +18,23 @@ package org.springframework.cloud.sleuth.instrument.web;
 
 import java.util.Arrays;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 
 import brave.Span;
 import brave.Tracer;
 import brave.Tracing;
+import brave.http.HttpClientParser;
+import brave.http.HttpRequestParser;
+import brave.http.HttpTags;
 import brave.http.HttpTracing;
-import brave.propagation.StrictScopeDecorator;
-import brave.propagation.ThreadLocalCurrentTraceContext;
+import brave.propagation.StrictCurrentTraceContext;
 import brave.sampler.Sampler;
 import brave.spring.web.TracingClientHttpRequestInterceptor;
-import org.apache.commons.lang3.StringUtils;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import brave.test.TestSpanHandler;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
-import org.springframework.cloud.sleuth.util.ArrayListSpanReporter;
-import org.springframework.cloud.sleuth.util.SpanUtil;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.client.ClientHttpRequestInterceptor;
 import org.springframework.test.web.client.MockMvcClientHttpRequestFactory;
@@ -55,16 +54,14 @@ import static org.assertj.core.api.BDDAssertions.then;
  */
 public class TraceRestTemplateInterceptorTests {
 
-	ArrayListSpanReporter reporter = new ArrayListSpanReporter();
+	StrictCurrentTraceContext currentTraceContext = StrictCurrentTraceContext.create();
 
-	Tracing tracing = Tracing.newBuilder()
-			.currentTraceContext(ThreadLocalCurrentTraceContext.newBuilder()
-					.addScopeDecorator(StrictScopeDecorator.create()).build())
-			.spanReporter(this.reporter).build();
+	TestSpanHandler spans = new TestSpanHandler();
+
+	Tracing tracing = Tracing.newBuilder().currentTraceContext(this.currentTraceContext)
+			.addSpanHandler(this.spans).build();
 
 	Tracer tracer = this.tracing.tracer();
-
-	TraceKeys traceKeys = new TraceKeys();
 
 	private TestController testController = new TestController();
 
@@ -74,7 +71,7 @@ public class TraceRestTemplateInterceptorTests {
 	private RestTemplate template = new RestTemplate(
 			new MockMvcClientHttpRequestFactory(this.mockMvc));
 
-	@Before
+	@BeforeEach
 	public void setup() {
 		setInterceptors(HttpTracing.create(this.tracing));
 	}
@@ -84,9 +81,10 @@ public class TraceRestTemplateInterceptorTests {
 				TracingClientHttpRequestInterceptor.create(httpTracing)));
 	}
 
-	@After
+	@AfterEach
 	public void clean() {
-		Tracing.current().close();
+		this.tracing.close();
+		this.currentTraceContext.close();
 	}
 
 	@Test
@@ -95,6 +93,7 @@ public class TraceRestTemplateInterceptorTests {
 		Map<String, String> headers = this.template.getForEntity("/", Map.class)
 				.getBody();
 
+		// Default inject format for client spans is B3 multi
 		then(headers.get("X-B3-TraceId")).isNotNull();
 		then(headers.get("X-B3-SpanId")).isNotNull();
 	}
@@ -111,19 +110,20 @@ public class TraceRestTemplateInterceptorTests {
 			span.finish();
 		}
 
-		then(headers.get("X-B3-TraceId"))
-				.isEqualTo(SpanUtil.idToHex(span.context().traceId()));
-		then(headers.get("X-B3-SpanId"))
-				.isNotEqualTo(SpanUtil.idToHex(span.context().spanId()));
-		then(headers.get("X-B3-ParentSpanId"))
-				.isEqualTo(SpanUtil.idToHex(span.context().spanId()));
+		// Default inject format for client spans is B3 multi
+		then(headers.get("X-B3-TraceId")).isEqualTo(span.context().traceIdString());
+		then(headers.get("X-B3-SpanId")).isNotEqualTo(span.context().spanIdString());
+		then(headers.get("X-B3-ParentSpanId")).isEqualTo(span.context().spanIdString());
 	}
 
 	// Issue #290
 	@Test
 	public void requestHeadersAddedWhenTracing() {
 		setInterceptors(HttpTracing.newBuilder(this.tracing)
-				.clientParser(new SleuthHttpClientParser(this.traceKeys)).build());
+				.clientRequestParser((request, context, span) -> {
+					HttpTags.URL.tag(request, context, span);
+					HttpRequestParser.DEFAULT.parse(request, context, span);
+				}).build());
 		Span span = this.tracer.nextSpan().name("new trace");
 
 		try (Tracer.SpanInScope ws = this.tracer.withSpanInScope(span.start())) {
@@ -133,18 +133,16 @@ public class TraceRestTemplateInterceptorTests {
 			span.finish();
 		}
 
-		List<zipkin2.Span> spans = this.reporter.getSpans();
-		then(spans).isNotEmpty();
-		then(spans.get(0).tags()).containsEntry("http.url", "/foo?a=b")
+		then(this.spans).isNotEmpty();
+		then(this.spans.get(0).tags()).containsEntry("http.url", "/foo?a=b")
 				.containsEntry("http.path", "/foo").containsEntry("http.method", "GET");
 	}
 
 	@Test
-	public void notSampledHeaderAddedWhenNotExportable() {
-		Tracing tracing = Tracing.newBuilder()
-				.currentTraceContext(ThreadLocalCurrentTraceContext.newBuilder()
-						.addScopeDecorator(StrictScopeDecorator.create()).build())
-				.spanReporter(this.reporter).sampler(Sampler.NEVER_SAMPLE).build();
+	public void notSampledHeaderAddedWhenNotSampled() {
+		this.tracing.close();
+		this.tracing = Tracing.newBuilder().currentTraceContext(this.currentTraceContext)
+				.addSpanHandler(this.spans).sampler(Sampler.NEVER_SAMPLE).build();
 		this.template.setInterceptors(Arrays.<ClientHttpRequestInterceptor>asList(
 				TracingClientHttpRequestInterceptor.create(HttpTracing.create(tracing))));
 
@@ -158,7 +156,7 @@ public class TraceRestTemplateInterceptorTests {
 			span.finish();
 		}
 
-		then(this.reporter.getSpans()).isEmpty();
+		then(this.spans).isEmpty();
 	}
 
 	// issue #198
@@ -171,7 +169,7 @@ public class TraceRestTemplateInterceptorTests {
 			fail("should throw an exception");
 		}
 		catch (RuntimeException e) {
-			then(e).hasMessage("500 Internal Server Error");
+			then(e).hasMessageStartingWith("500 Internal Server Error");
 		}
 		finally {
 			span.finish();
@@ -183,7 +181,7 @@ public class TraceRestTemplateInterceptorTests {
 	@Test
 	public void createdSpanNameHasOnlyPrintableAsciiCharactersForNonEncodedURIWithNonAsciiChars() {
 		setInterceptors(HttpTracing.newBuilder(this.tracing)
-				.clientParser(new SleuthHttpClientParser(this.traceKeys)).build());
+				.clientParser(new HttpClientParser()).build());
 		Span span = this.tracer.nextSpan().name("new trace");
 
 		try (Tracer.SpanInScope ws = this.tracer.withSpanInScope(span.start())) {
@@ -196,42 +194,7 @@ public class TraceRestTemplateInterceptorTests {
 			span.finish();
 		}
 
-		List<zipkin2.Span> spans = this.reporter.getSpans();
-		then(spans).hasSize(2);
-		String spanName = spans.get(0).name();
-		then(spanName).isEqualTo("http:/cas~fs~%c3%a5%cb%86%e2%80%99");
-		then(StringUtils.isAsciiPrintable(spanName));
-	}
-
-	@Test
-	public void willShortenTheNameOfTheSpan() {
-		setInterceptors(HttpTracing.newBuilder(this.tracing)
-				.clientParser(new SleuthHttpClientParser(this.traceKeys)).build());
-		Span span = this.tracer.nextSpan().name("new trace");
-
-		try (Tracer.SpanInScope ws = this.tracer.withSpanInScope(span.start())) {
-			this.template.getForEntity("/" + bigName(), Map.class).getBody();
-		}
-		catch (Exception e) {
-
-		}
-		finally {
-			span.finish();
-		}
-
-		List<zipkin2.Span> spans = this.reporter.getSpans();
-		then(spans).isNotEmpty();
-		String spanName = spans.get(0).name();
-		then(spanName).hasSize(50);
-		then(StringUtils.isAsciiPrintable(spanName));
-	}
-
-	private String bigName() {
-		StringBuilder sb = new StringBuilder();
-		for (int i = 0; i < 60; i++) {
-			sb.append("a");
-		}
-		return sb.toString();
+		then(this.spans).hasSize(2);
 	}
 
 	@RestController
@@ -242,7 +205,8 @@ public class TraceRestTemplateInterceptorTests {
 		@RequestMapping("/")
 		public Map<String, String> home(@RequestHeader HttpHeaders headers) {
 			this.span = TraceRestTemplateInterceptorTests.this.tracer.currentSpan();
-			Map<String, String> map = new HashMap<String, String>();
+			Map<String, String> map = new HashMap<>();
+			// Default inject format for client spans is B3 multi
 			addHeaders(map, headers, "X-B3-SpanId", "X-B3-TraceId", "X-B3-ParentSpanId");
 			return map;
 		}

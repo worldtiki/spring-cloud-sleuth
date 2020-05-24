@@ -16,28 +16,42 @@
 
 package org.springframework.cloud.sleuth.instrument.web.client;
 
-import org.assertj.core.api.BDDAssertions;
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.mockito.Mock;
-import org.mockito.junit.MockitoJUnitRunner;
+import java.util.concurrent.atomic.AtomicReference;
 
-import org.springframework.beans.factory.BeanFactory;
+import brave.Span;
+import org.assertj.core.api.BDDAssertions;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+import org.reactivestreams.Subscription;
+
+import org.springframework.cloud.sleuth.instrument.web.client.TraceExchangeFilterFunction.TraceWebClientSubscription;
+import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.web.reactive.function.client.WebClient;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.verify;
 
 /**
  * @author Marcin Grzejszczak
  */
-@RunWith(MockitoJUnitRunner.class)
+@ExtendWith(MockitoExtension.class)
 public class TraceWebClientBeanPostProcessorTest {
 
 	@Mock
-	BeanFactory beanFactory;
+	ConfigurableApplicationContext springContext;
+
+	@Mock
+	Subscription subscription;
+
+	@Mock
+	Span span;
 
 	@Test
-	public void should_add_filter_only_once_to_web_client() {
+	void should_add_filter_only_once_to_web_client() {
 		TraceWebClientBeanPostProcessor processor = new TraceWebClientBeanPostProcessor(
-				this.beanFactory);
+				this.springContext);
 		WebClient client = WebClient.create();
 
 		client = (WebClient) processor.postProcessAfterInitialization(client, "foo");
@@ -51,9 +65,9 @@ public class TraceWebClientBeanPostProcessorTest {
 	}
 
 	@Test
-	public void should_add_filter_only_once_to_web_client_via_builder() {
+	void should_add_filter_only_once_to_web_client_via_builder() {
 		TraceWebClientBeanPostProcessor processor = new TraceWebClientBeanPostProcessor(
-				this.beanFactory);
+				this.springContext);
 		WebClient.Builder builder = WebClient.builder();
 
 		builder = (WebClient.Builder) processor.postProcessAfterInitialization(builder,
@@ -66,6 +80,33 @@ public class TraceWebClientBeanPostProcessorTest {
 			BDDAssertions.then(filters.get(0))
 					.isInstanceOf(TraceExchangeFilterFunction.class);
 		});
+	}
+
+	@Test
+	void should_close_span_on_cancel() {
+		TraceWebClientSubscription traceSubscription = new TraceWebClientSubscription(
+				subscription, new AtomicReference<>(span));
+
+		traceSubscription.request(1);
+		traceSubscription.cancel();
+
+		verify(span).error(TraceWebClientSubscription.CANCELLED_ERROR);
+		verify(span).finish();
+
+		// Check that the ref is clear following span completion
+		assertThat(traceSubscription.pendingSpan.get()).isNull();
+	}
+
+	@Test
+	void should_not_crash_on_cancel_when_span_clear() {
+		TraceWebClientSubscription traceSubscription = new TraceWebClientSubscription(
+				subscription, new AtomicReference<>());
+
+		traceSubscription.request(1);
+		traceSubscription.cancel();
+
+		verify(subscription).request(1);
+		verify(subscription).cancel();
 	}
 
 }

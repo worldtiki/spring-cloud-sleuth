@@ -21,21 +21,21 @@ import java.util.regex.Pattern;
 
 import javax.servlet.Filter;
 
-import brave.ErrorParser;
 import brave.Span;
 import brave.Tracer;
 import brave.Tracing;
+import brave.http.HttpClientParser;
+import brave.http.HttpServerParser;
 import brave.http.HttpTracing;
 import brave.propagation.StrictScopeDecorator;
 import brave.propagation.ThreadLocalCurrentTraceContext;
 import brave.sampler.Sampler;
 import brave.servlet.TracingFilter;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import brave.test.TestSpanHandler;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
-import org.springframework.cloud.sleuth.util.ArrayListSpanReporter;
-import org.springframework.cloud.sleuth.util.SpanUtil;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -54,27 +54,17 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
  */
 public class TraceFilterTests {
 
-	static final String PARENT_ID = SpanUtil.idToHex(10L);
-	static final String TRACE_ID_NAME = "X-B3-TraceId";
-	static final String SPAN_ID_NAME = "X-B3-SpanId";
-	static final String PARENT_SPAN_ID_NAME = "X-B3-ParentSpanId";
-	static final String SAMPLED_ID_NAME = "X-B3-Sampled";
-	static final String SPAN_FLAGS = "X-B3-Flags";
-
-	ArrayListSpanReporter reporter = new ArrayListSpanReporter();
+	TestSpanHandler spans = new TestSpanHandler();
 
 	Tracing tracing = Tracing.newBuilder()
 			.currentTraceContext(ThreadLocalCurrentTraceContext.newBuilder()
 					.addScopeDecorator(StrictScopeDecorator.create()).build())
-			.spanReporter(this.reporter).build();
+			.addSpanHandler(this.spans).build();
 
 	Tracer tracer = this.tracing.tracer();
 
-	TraceKeys traceKeys = new TraceKeys();
-
 	HttpTracing httpTracing = HttpTracing.newBuilder(this.tracing)
-			.clientParser(new SleuthHttpClientParser(this.traceKeys))
-			.serverParser(new SleuthHttpServerParser(this.traceKeys, new ErrorParser()))
+			.clientParser(new HttpClientParser()).serverParser(new HttpServerParser())
 			.serverSampler(new SkipPatternHttpServerSampler(() -> Pattern.compile("")))
 			.build();
 
@@ -86,7 +76,7 @@ public class TraceFilterTests {
 
 	MockFilterChain filterChain;
 
-	@Before
+	@BeforeEach
 	public void init() {
 		this.request = builder().buildRequest(new MockServletContext());
 		this.response = new MockHttpServletResponse();
@@ -99,7 +89,7 @@ public class TraceFilterTests {
 				"MockMvc");
 	}
 
-	@After
+	@AfterEach
 	public void cleanup() {
 		Tracing.current().close();
 	}
@@ -112,19 +102,17 @@ public class TraceFilterTests {
 		neverSampleFilter().doFilter(this.request, this.response, this.filterChain);
 
 		then(Tracing.current().tracer().currentSpan()).isNull();
-		then(this.reporter.getSpans()).isEmpty();
+		then(this.spans).isEmpty();
 	}
 
 	private Filter neverSampleFilter() {
 		Tracing tracing = Tracing.newBuilder()
 				.currentTraceContext(ThreadLocalCurrentTraceContext.newBuilder()
 						.addScopeDecorator(StrictScopeDecorator.create()).build())
-				.spanReporter(this.reporter).sampler(Sampler.NEVER_SAMPLE)
+				.addSpanHandler(this.spans).sampler(Sampler.NEVER_SAMPLE)
 				.supportsJoin(false).build();
 		HttpTracing httpTracing = HttpTracing.newBuilder(tracing)
-				.clientParser(new SleuthHttpClientParser(this.traceKeys))
-				.serverParser(
-						new SleuthHttpServerParser(this.traceKeys, new ErrorParser()))
+				.clientParser(new HttpClientParser()).serverParser(new HttpServerParser())
 				.serverSampler(
 						new SkipPatternHttpServerSampler(() -> Pattern.compile("")))
 				.build();
@@ -135,10 +123,8 @@ public class TraceFilterTests {
 	public void startsNewTrace() throws Exception {
 		this.filter.doFilter(this.request, this.response, this.filterChain);
 
-		then(this.reporter.getSpans()).hasSize(1);
-		then(this.reporter.getSpans().get(0).tags())
-				.containsEntry("http.url", "http://localhost/?foo=bar")
-				.containsEntry("http.host", "localhost").containsEntry("http.path", "/")
+		then(this.spans).hasSize(1);
+		then(this.spans.get(0).tags()).containsEntry("http.path", "/")
 				.containsEntry("http.method", HttpMethod.GET.toString());
 		// we don't check for status_code anymore cause Brave doesn't support it oob
 		// .containsEntry("http.status_code", "200")
@@ -151,36 +137,30 @@ public class TraceFilterTests {
 		this.filter.doFilter(this.request, this.response, this.filterChain);
 
 		then(Tracing.current().tracer().currentSpan()).isNull();
-		then(this.reporter.getSpans()).hasSize(1);
-		then(this.reporter.getSpans().get(0).tags())
-				.doesNotContainKey("http.status_code");
+		then(this.spans).hasSize(1);
+		then(this.spans.get(0).tags()).doesNotContainKey("http.status_code");
 	}
 
 	@Test
 	public void startsNewTraceWithParentIdInHeaders() throws Exception {
-		this.request = builder().header(SPAN_ID_NAME, PARENT_ID)
-				.header(TRACE_ID_NAME, SpanUtil.idToHex(2L))
-				.header(PARENT_SPAN_ID_NAME, SpanUtil.idToHex(3L))
+		this.request = builder()
+				.header("b3", "0000000000000002-0000000000000003-1-000000000000000a")
 				.buildRequest(new MockServletContext());
 
 		this.filter.doFilter(this.request, this.response, this.filterChain);
 
 		then(Tracing.current().tracer().currentSpan()).isNull();
-		then(this.reporter.getSpans()).hasSize(1);
-		then(this.reporter.getSpans().get(0).id()).isEqualTo(PARENT_ID);
-		then(this.reporter.getSpans().get(0).tags())
-				.containsEntry("http.url", "http://localhost/?foo=bar")
-				.containsEntry("http.host", "localhost").containsEntry("http.path", "/")
+		then(this.spans).hasSize(1);
+		then(this.spans.get(0).id()).isEqualTo("0000000000000003");
+		then(this.spans.get(0).tags()).containsEntry("http.path", "/")
 				.containsEntry("http.method", HttpMethod.GET.toString());
 	}
 
 	@Test
 	public void continuesATraceWhenSpanNotSampled() throws Exception {
 		AtomicReference<Span> span = new AtomicReference<>();
-		this.request = builder().header(SPAN_ID_NAME, PARENT_ID)
-				.header(TRACE_ID_NAME, SpanUtil.idToHex(2L))
-				.header(PARENT_SPAN_ID_NAME, SpanUtil.idToHex(3L))
-				.header(SAMPLED_ID_NAME, 0).buildRequest(new MockServletContext());
+		this.request = builder().header("b3", "0000000000000014-000000000000000a-0")
+				.buildRequest(new MockServletContext());
 
 		this.filter.doFilter(this.request, this.response, (req, resp) -> {
 			this.filterChain.doFilter(req, resp);
@@ -188,7 +168,7 @@ public class TraceFilterTests {
 		});
 
 		then(Tracing.current().tracer().currentSpan()).isNull();
-		then(span.get().context().traceIdString()).isEqualTo(SpanUtil.idToHex(2L));
+		then(span.get().context().traceIdString()).isEqualTo("0000000000000014");
 	}
 
 	@Test
@@ -208,7 +188,7 @@ public class TraceFilterTests {
 		this.filter.doFilter(this.request, this.response, this.filterChain);
 
 		then(Tracing.current().tracer().currentSpan()).isNull();
-		then(this.reporter.getSpans()).hasSize(1);
+		then(this.spans).hasSize(1);
 	}
 
 	@Test
@@ -223,8 +203,7 @@ public class TraceFilterTests {
 
 	@Test
 	public void continuesSpanFromHeaders() throws Exception {
-		this.request = builder().header(SPAN_ID_NAME, PARENT_ID)
-				.header(TRACE_ID_NAME, SpanUtil.idToHex(20L))
+		this.request = builder().header("b3", "0000000000000014-000000000000000a")
 				.buildRequest(new MockServletContext());
 
 		this.filter.doFilter(this.request, this.response, this.filterChain);
@@ -238,55 +217,22 @@ public class TraceFilterTests {
 		Tracing tracing = Tracing.newBuilder()
 				.currentTraceContext(ThreadLocalCurrentTraceContext.newBuilder()
 						.addScopeDecorator(StrictScopeDecorator.create()).build())
-				.spanReporter(this.reporter).supportsJoin(false).build();
+				.addSpanHandler(this.spans).supportsJoin(false).build();
 		HttpTracing httpTracing = HttpTracing.create(tracing);
-		this.request = builder().header(SPAN_ID_NAME, PARENT_ID)
-				.header(TRACE_ID_NAME, SpanUtil.idToHex(20L))
+		this.request = builder().header("b3", "0000000000000014-000000000000000a")
 				.buildRequest(new MockServletContext());
 
 		TracingFilter.create(httpTracing).doFilter(this.request, this.response,
 				this.filterChain);
 
 		then(Tracing.current().tracer().currentSpan()).isNull();
-		then(this.reporter.getSpans()).hasSize(1);
-		then(this.reporter.getSpans().get(0).parentId()).isEqualTo(PARENT_ID);
-	}
-
-	@Test
-	public void addsAdditionalHeaders() throws Exception {
-		this.request = builder().header(SPAN_ID_NAME, PARENT_ID)
-				.header(TRACE_ID_NAME, SpanUtil.idToHex(20L))
-				.buildRequest(new MockServletContext());
-		this.traceKeys.getHttp().getHeaders().add("x-foo");
-		this.request.addHeader("X-Foo", "bar");
-
-		this.filter.doFilter(this.request, this.response, this.filterChain);
-
-		then(Tracing.current().tracer().currentSpan()).isNull();
-		then(this.reporter.getSpans()).hasSize(1);
-		then(this.reporter.getSpans().get(0).tags()).containsEntry("http.x-foo", "bar");
-	}
-
-	@Test
-	public void additionalMultiValuedHeader() throws Exception {
-		this.request = builder().header(SPAN_ID_NAME, PARENT_ID)
-				.header(TRACE_ID_NAME, SpanUtil.idToHex(20L))
-				.buildRequest(new MockServletContext());
-		this.traceKeys.getHttp().getHeaders().add("x-foo");
-		this.request.addHeader("X-Foo", "bar");
-		this.request.addHeader("X-Foo", "spam");
-		this.filter.doFilter(this.request, this.response, this.filterChain);
-
-		then(Tracing.current().tracer().currentSpan()).isNull();
-		then(this.reporter.getSpans()).hasSize(1);
-		// We no longer support multi value headers
-		then(this.reporter.getSpans().get(0).tags()).containsEntry("http.x-foo", "bar");
+		then(this.spans).hasSize(1);
+		then(this.spans.get(0).parentId()).isEqualTo("000000000000000a");
 	}
 
 	@Test
 	public void shouldAnnotateSpanWithErrorWhenExceptionIsThrown() throws Exception {
-		this.request = builder().header(SPAN_ID_NAME, PARENT_ID)
-				.header(TRACE_ID_NAME, SpanUtil.idToHex(20L))
+		this.request = builder().header("b3", "0000000000000014-000000000000000a")
 				.buildRequest(new MockServletContext());
 
 		this.filterChain = new MockFilterChain() {
@@ -305,15 +251,14 @@ public class TraceFilterTests {
 		}
 
 		then(Tracing.current().tracer().currentSpan()).isNull();
-		verifyParentSpanHttpTags(HttpStatus.INTERNAL_SERVER_ERROR);
-		then(this.reporter.getSpans()).hasSize(1);
-		then(this.reporter.getSpans().get(0).tags()).containsEntry("error", "Planned");
+		verifyParentSpanHttpTags();
+		then(this.spans).hasSize(1);
+		then(this.spans.get(0).tags()).containsEntry("error", "Planned");
 	}
 
 	@Test
 	public void detachesSpanWhenResponseStatusIsNot2xx() throws Exception {
-		this.request = builder().header(SPAN_ID_NAME, PARENT_ID)
-				.header(TRACE_ID_NAME, SpanUtil.idToHex(20L))
+		this.request = builder().header("b3", "14-a")
 				.buildRequest(new MockServletContext());
 
 		this.response.setStatus(404);
@@ -324,107 +269,72 @@ public class TraceFilterTests {
 
 	@Test
 	public void closesSpanWhenResponseStatusIs2xx() throws Exception {
-		this.request = builder().header(SPAN_ID_NAME, PARENT_ID)
-				.header(TRACE_ID_NAME, SpanUtil.idToHex(20L))
+		this.request = builder().header("b3", "0000000000000014-000000000000000a")
 				.buildRequest(new MockServletContext());
 		this.response.setStatus(200);
 
 		this.filter.doFilter(this.request, this.response, this.filterChain);
 
 		then(Tracing.current().tracer().currentSpan()).isNull();
-		then(this.reporter.getSpans()).hasSize(1);
+		then(this.spans).hasSize(1);
 	}
 
 	@Test
 	public void closesSpanWhenResponseStatusIs3xx() throws Exception {
-		this.request = builder().header(SPAN_ID_NAME, PARENT_ID)
-				.header(TRACE_ID_NAME, SpanUtil.idToHex(20L))
+		this.request = builder().header("b3", "0000000000000014-000000000000000a")
 				.buildRequest(new MockServletContext());
 		this.response.setStatus(302);
 
 		this.filter.doFilter(this.request, this.response, this.filterChain);
 
 		then(Tracing.current().tracer().currentSpan()).isNull();
-		then(this.reporter.getSpans()).hasSize(1);
+		then(this.spans).hasSize(1);
 	}
 
 	@Test
 	public void returns400IfSpanIsMalformedAndCreatesANewSpan() throws Exception {
-		this.request = builder().header(SPAN_ID_NAME, "asd")
-				.header(TRACE_ID_NAME, SpanUtil.idToHex(20L))
+		this.request = builder().header("b3", "asd")
 				.buildRequest(new MockServletContext());
 
 		this.filter.doFilter(this.request, this.response, this.filterChain);
 
 		then(Tracing.current().tracer().currentSpan()).isNull();
-		then(this.reporter.getSpans()).isNotEmpty();
+		then(this.spans).isNotEmpty();
 		then(this.response.getStatus()).isEqualTo(HttpStatus.OK.value());
 	}
 
 	@Test
 	public void returns200IfSpanParentIsMalformedAndCreatesANewSpan() throws Exception {
-		this.request = builder().header(SPAN_ID_NAME, PARENT_ID)
-				.header(PARENT_SPAN_ID_NAME, "-")
-				.header(TRACE_ID_NAME, SpanUtil.idToHex(20L))
+		this.request = builder().header("b3", "asd")
 				.buildRequest(new MockServletContext());
 
 		this.filter.doFilter(this.request, this.response, this.filterChain);
 
 		then(Tracing.current().tracer().currentSpan()).isNull();
-		then(this.reporter.getSpans()).isNotEmpty();
+		then(this.spans).isNotEmpty();
 		then(this.response.getStatus()).isEqualTo(HttpStatus.OK.value());
 	}
 
 	@Test
-	public void samplesASpanRegardlessOfTheSamplerWhenXB3FlagsIsPresentAndSetTo1()
-			throws Exception {
-		this.request = builder().header(SPAN_FLAGS, 1)
-				.buildRequest(new MockServletContext());
+	public void samplesASpanRegardlessOfTheSamplerWhenDebugIsPresent() throws Exception {
+		this.request = builder().header("b3", "d").buildRequest(new MockServletContext());
 
 		neverSampleFilter().doFilter(this.request, this.response, this.filterChain);
 
 		then(Tracing.current().tracer().currentSpan()).isNull();
-		then(this.reporter.getSpans()).isNotEmpty();
-	}
-
-	@Test
-	public void doesNotOverrideTheSampledFlagWhenXB3FlagIsSetToOtherValueThan1()
-			throws Exception {
-		this.request = builder().header(SPAN_FLAGS, 0)
-				.buildRequest(new MockServletContext());
-
-		this.filter.doFilter(this.request, this.response, this.filterChain);
-
-		then(Tracing.current().tracer().currentSpan()).isNull();
-		then(this.reporter.getSpans()).isNotEmpty();
-	}
-
-	@SuppressWarnings("Duplicates")
-	@Test
-	public void samplesWhenDebugFlagIsSetTo1AndOnlySpanIdIsSet() throws Exception {
-		this.request = builder().header(SPAN_FLAGS, 1)
-				.header(SPAN_ID_NAME, SpanUtil.idToHex(10L))
-				.buildRequest(new MockServletContext());
-
-		neverSampleFilter().doFilter(this.request, this.response, this.filterChain);
-
-		then(Tracing.current().tracer().currentSpan()).isNull();
-		// It is ok to go without a trace ID, if sampling or debug is set
-		then(this.reporter.getSpans()).hasSize(1).extracting("id")
-				.isNotEqualTo(SpanUtil.idToHex(10L));
+		then(this.spans).isNotEmpty();
 	}
 
 	@SuppressWarnings("Duplicates")
 	@Test
 	public void usesSamplingMechanismWhenIncomingTraceIsMalformed() throws Exception {
-		this.request = builder().header(SPAN_FLAGS, 1)
-				.header(TRACE_ID_NAME, SpanUtil.idToHex(10L))
+		this.request = builder().header("b3", "asd")
 				.buildRequest(new MockServletContext());
 
 		neverSampleFilter().doFilter(this.request, this.response, this.filterChain);
 
 		then(Tracing.current().tracer().currentSpan()).isNull();
-		then(this.reporter.getSpans()).isEmpty();
+		then(this.spans).isEmpty();
 	}
 
 	// #668
@@ -437,10 +347,8 @@ public class TraceFilterTests {
 		this.filter.doFilter(this.request, this.response, this.filterChain);
 
 		then(Tracing.current().tracer().currentSpan()).isNull();
-		then(this.reporter.getSpans()).hasSize(1);
-		then(this.reporter.getSpans().get(0).tags())
-				.containsEntry("http.url", "http://localhost/?foo=bar")
-				.containsEntry("http.host", "localhost").containsEntry("http.path", "/")
+		then(this.spans).hasSize(1);
+		then(this.spans.get(0).tags()).containsEntry("http.path", "/")
 				.containsEntry("http.method", HttpMethod.GET.toString());
 		// we don't check for status_code anymore cause Brave doesn't support it oob
 		// .containsEntry("http.status_code", "295")
@@ -448,48 +356,19 @@ public class TraceFilterTests {
 
 	@Test
 	public void samplesASpanDebugFlagWithInterceptor() throws Exception {
-		this.request = builder().header(SPAN_FLAGS, 1)
-				.buildRequest(new MockServletContext());
+		this.request = builder().header("b3", "d").buildRequest(new MockServletContext());
 
 		neverSampleFilter().doFilter(this.request, this.response, this.filterChain);
 
 		then(Tracing.current().tracer().currentSpan()).isNull();
-		then(this.reporter.getSpans()).hasSize(1);
-		then(this.reporter.getSpans().get(0).name()).isEqualTo("http:/");
+		then(this.spans).hasSize(1);
+		then(this.spans.get(0).name()).isEqualTo("GET");
 	}
 
 	public void verifyParentSpanHttpTags() {
-		verifyParentSpanHttpTags(HttpStatus.OK);
-	}
-
-	/**
-	 * Shows the expansion of {@link import
-	 * org.springframework.cloud.sleuth.instrument.TraceKeys}.
-	 * @param status http status
-	 */
-	public void verifyParentSpanHttpTags(HttpStatus status) {
-		then(this.reporter.getSpans().size()).isGreaterThan(0);
-		then(this.reporter.getSpans().get(0).tags())
-				.containsEntry("http.url", "http://localhost/?foo=bar")
-				.containsEntry("http.host", "localhost").containsEntry("http.path", "/")
+		then(this.spans).isNotEmpty();
+		then(this.spans.get(0).tags()).containsEntry("http.path", "/")
 				.containsEntry("http.method", HttpMethod.GET.toString());
-		verifyCurrentSpanStatusCodeForAContinuedSpan(status);
-
-	}
-
-	private void verifyCurrentSpanStatusCodeForAContinuedSpan(HttpStatus status) {
-		// Status is only interesting in non-success case. Omitting it saves at least
-		// 20bytes per span.
-		if (status.is2xxSuccessful()) {
-			then(this.reporter.getSpans()).hasSize(1);
-			then(this.reporter.getSpans().get(0).tags())
-					.doesNotContainKey("http.status_code");
-		}
-		else {
-			then(this.reporter.getSpans()).hasSize(1);
-			then(this.reporter.getSpans().get(0).tags()).containsEntry("http.status_code",
-					"500");
-		}
 	}
 
 }

@@ -16,36 +16,48 @@
 
 package org.springframework.cloud.sleuth.sampler;
 
+import brave.sampler.CountingSampler;
 import brave.sampler.Sampler;
 
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.cloud.context.config.annotation.RefreshScope;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Conditional;
 import org.springframework.context.annotation.Configuration;
 
 /**
- * {@link org.springframework.boot.autoconfigure.EnableAutoConfiguration
- * Auto-configuration} to setup sampling for Spring Cloud Sleuth.
+ * {@linkplain Configuration configuration} for {@link Sampler}.
  *
  * @author Marcin Grzejszczak
+ * @see SamplerCondition
  * @since 2.1.0
  */
-@Configuration
-@ConditionalOnProperty(value = "spring.sleuth.enabled", matchIfMissing = true)
+@Configuration(proxyBeanMethods = false)
 @EnableConfigurationProperties(SamplerProperties.class)
+// This is not auto-configuration, but it was in the past. Leaving the name as
+// SamplerAutoConfiguration because those not using Zipkin formerly had to
+// import this directly. A less precise name is better than rev-locking code.
 public class SamplerAutoConfiguration {
 
-	static Sampler samplerFromProps(SamplerProperties config) {
-		if (config.getProbability() != null) {
-			return new ProbabilityBasedSampler(config);
-		}
-		return new RateLimitingSampler(config);
+	@Bean
+	@ConditionalOnMissingBean
+	Sampler sleuthTraceSampler() {
+		return Sampler.NEVER_SAMPLE;
 	}
 
-	@Configuration
+	// NOTE: Brave's default samplers return Sampler.NEVER_SAMPLE if the config implies
+	// that
+	static Sampler samplerFromProps(SamplerProperties config) {
+		if (config.getProbability() != null) {
+			return CountingSampler.create(config.getProbability());
+		}
+		return brave.sampler.RateLimitingSampler.create(config.getRate());
+	}
+
+	@Configuration(proxyBeanMethods = false)
+	@Conditional(SamplerCondition.class)
 	@ConditionalOnBean(
 			type = "org.springframework.cloud.context.scope.refresh.RefreshScope")
 	protected static class RefreshScopedSamplerConfiguration {
@@ -54,12 +66,18 @@ public class SamplerAutoConfiguration {
 		@RefreshScope
 		@ConditionalOnMissingBean
 		public Sampler defaultTraceSampler(SamplerProperties config) {
-			return samplerFromProps(config);
+			// TODO: Rewrite: refresh should replace the sampler, not change its state
+			// internally
+			if (config.getProbability() != null) {
+				return new ProbabilityBasedSampler(config);
+			}
+			return new RateLimitingSampler(config);
 		}
 
 	}
 
-	@Configuration
+	@Configuration(proxyBeanMethods = false)
+	@Conditional(SamplerCondition.class)
 	@ConditionalOnMissingBean(
 			type = "org.springframework.cloud.context.scope.refresh.RefreshScope")
 	protected static class NonRefreshScopeSamplerConfiguration {

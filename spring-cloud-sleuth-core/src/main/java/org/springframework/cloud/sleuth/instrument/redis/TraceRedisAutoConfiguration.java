@@ -23,9 +23,12 @@ import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 
 import org.springframework.beans.BeansException;
+import org.springframework.beans.factory.BeanFactory;
 import org.springframework.beans.factory.config.BeanPostProcessor;
 import org.springframework.boot.autoconfigure.AutoConfigureAfter;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.cloud.sleuth.autoconfig.TraceAutoConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -37,19 +40,21 @@ import org.springframework.context.annotation.Configuration;
  * @author Chao Chang
  * @since 2.2.0
  */
-@Configuration
-@OnRedisEnabled
+@Configuration(proxyBeanMethods = false)
+@ConditionalOnProperty(value = "spring.sleuth.redis.enabled", matchIfMissing = true)
 @ConditionalOnBean({ Tracing.class, ClientResources.class })
 @AutoConfigureAfter({ TraceAutoConfiguration.class })
-public class TraceRedisAutoConfiguration {
+@EnableConfigurationProperties(TraceRedisProperties.class)
+class TraceRedisAutoConfiguration {
 
-	@Configuration
+	@Configuration(proxyBeanMethods = false)
 	static class LettuceConfig {
 
 		@Bean
 		static TraceLettuceClientResourcesBeanPostProcessor traceLettuceClientResourcesBeanPostProcessor(
-				Tracing tracing) {
-			return new TraceLettuceClientResourcesBeanPostProcessor(tracing);
+				BeanFactory beanFactory, TraceRedisProperties traceRedisProperties) {
+			return new TraceLettuceClientResourcesBeanPostProcessor(beanFactory,
+					traceRedisProperties);
 		}
 
 	}
@@ -61,10 +66,16 @@ class TraceLettuceClientResourcesBeanPostProcessor implements BeanPostProcessor 
 	private static final Log log = LogFactory
 			.getLog(TraceLettuceClientResourcesBeanPostProcessor.class);
 
-	private final Tracing tracing;
+	private final BeanFactory beanFactory;
 
-	TraceLettuceClientResourcesBeanPostProcessor(Tracing tracing) {
-		this.tracing = tracing;
+	private final TraceRedisProperties traceRedisProperties;
+
+	private Tracing tracing;
+
+	TraceLettuceClientResourcesBeanPostProcessor(BeanFactory beanFactory,
+			TraceRedisProperties traceRedisProperties) {
+		this.beanFactory = beanFactory;
+		this.traceRedisProperties = traceRedisProperties;
 	}
 
 	@Override
@@ -83,7 +94,10 @@ class TraceLettuceClientResourcesBeanPostProcessor implements BeanPostProcessor 
 					log.debug(
 							"Lettuce ClientResources bean is auto-configured to enable tracing.");
 				}
-				return cr.mutate().tracing(BraveTracing.create(this.tracing)).build();
+				BraveTracing lettuceTracing = BraveTracing.builder().tracing(tracing())
+						.excludeCommandArgsFromSpanTags()
+						.serviceName(traceRedisProperties.getRemoteServiceName()).build();
+				return cr.mutate().tracing(lettuceTracing).build();
 			}
 			if (log.isDebugEnabled()) {
 				log.debug(
@@ -91,6 +105,13 @@ class TraceLettuceClientResourcesBeanPostProcessor implements BeanPostProcessor 
 			}
 		}
 		return bean;
+	}
+
+	private Tracing tracing() {
+		if (this.tracing == null) {
+			this.tracing = this.beanFactory.getBean(Tracing.class);
+		}
+		return this.tracing;
 	}
 
 }

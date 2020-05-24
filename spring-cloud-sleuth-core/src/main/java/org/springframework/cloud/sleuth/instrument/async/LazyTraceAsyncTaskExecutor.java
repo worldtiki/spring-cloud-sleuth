@@ -25,8 +25,8 @@ import org.apache.commons.logging.LogFactory;
 
 import org.springframework.beans.factory.BeanFactory;
 import org.springframework.beans.factory.NoSuchBeanDefinitionException;
-import org.springframework.cloud.sleuth.DefaultSpanNamer;
 import org.springframework.cloud.sleuth.SpanNamer;
+import org.springframework.cloud.sleuth.internal.DefaultSpanNamer;
 import org.springframework.core.task.AsyncTaskExecutor;
 
 /**
@@ -36,6 +36,7 @@ import org.springframework.core.task.AsyncTaskExecutor;
  * @author Marcin Grzejszczak
  * @since 2.1.0
  */
+// public as most types in this package were documented for use
 public class LazyTraceAsyncTaskExecutor implements AsyncTaskExecutor {
 
 	private static final Log log = LogFactory.getLog(LazyTraceAsyncTaskExecutor.class);
@@ -57,7 +58,7 @@ public class LazyTraceAsyncTaskExecutor implements AsyncTaskExecutor {
 	@Override
 	public void execute(Runnable task) {
 		Runnable taskToRun = task;
-		if (!ContextUtil.isContextInCreation(this.beanFactory)) {
+		if (!ContextUtil.isContextUnusable(this.beanFactory)) {
 			taskToRun = new TraceRunnable(tracing(), spanNamer(), task);
 		}
 		this.delegate.execute(taskToRun);
@@ -66,7 +67,7 @@ public class LazyTraceAsyncTaskExecutor implements AsyncTaskExecutor {
 	@Override
 	public void execute(Runnable task, long startTimeout) {
 		Runnable taskToRun = task;
-		if (!ContextUtil.isContextInCreation(this.beanFactory)) {
+		if (!ContextUtil.isContextUnusable(this.beanFactory)) {
 			taskToRun = new TraceRunnable(tracing(), spanNamer(), task);
 		}
 		this.delegate.execute(taskToRun, startTimeout);
@@ -75,7 +76,7 @@ public class LazyTraceAsyncTaskExecutor implements AsyncTaskExecutor {
 	@Override
 	public Future<?> submit(Runnable task) {
 		Runnable taskToRun = task;
-		if (!ContextUtil.isContextInCreation(this.beanFactory)) {
+		if (!ContextUtil.isContextUnusable(this.beanFactory)) {
 			taskToRun = new TraceRunnable(tracing(), spanNamer(), task);
 		}
 		return this.delegate.submit(taskToRun);
@@ -84,7 +85,7 @@ public class LazyTraceAsyncTaskExecutor implements AsyncTaskExecutor {
 	@Override
 	public <T> Future<T> submit(Callable<T> task) {
 		Callable<T> taskToRun = task;
-		if (!ContextUtil.isContextInCreation(this.beanFactory)) {
+		if (!ContextUtil.isContextUnusable(this.beanFactory)) {
 			taskToRun = new TraceCallable<>(tracing(), spanNamer(), task);
 		}
 		return this.delegate.submit(taskToRun);

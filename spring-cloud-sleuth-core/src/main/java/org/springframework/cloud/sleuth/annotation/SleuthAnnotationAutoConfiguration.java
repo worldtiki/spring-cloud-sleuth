@@ -40,12 +40,12 @@ import org.springframework.context.annotation.Role;
  * @author Marcin Grzejszczak
  * @since 1.2.0
  */
-@Configuration
+@Configuration(proxyBeanMethods = false)
 @Role(BeanDefinition.ROLE_INFRASTRUCTURE)
 @ConditionalOnBean(Tracing.class)
 @ConditionalOnProperty(name = "spring.sleuth.annotation.enabled", matchIfMissing = true)
 @AutoConfigureAfter(TraceAutoConfiguration.class)
-public class SleuthAnnotationAutoConfiguration {
+class SleuthAnnotationAutoConfiguration {
 
 	@Bean
 	@ConditionalOnMissingBean

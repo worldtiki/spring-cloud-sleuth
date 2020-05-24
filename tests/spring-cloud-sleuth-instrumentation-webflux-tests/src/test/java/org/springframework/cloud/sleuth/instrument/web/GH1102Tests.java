@@ -18,12 +18,13 @@ package org.springframework.cloud.sleuth.instrument.web;
 
 import brave.ScopedSpan;
 import brave.Tracer;
+import brave.handler.SpanHandler;
 import brave.sampler.Sampler;
+import brave.test.TestSpanHandler;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.assertj.core.api.BDDAssertions;
-import org.junit.Test;
-import org.junit.runner.RunWith;
+import org.junit.jupiter.api.Test;
 import reactor.core.publisher.Mono;
 
 import org.springframework.beans.factory.annotation.Autowired;
@@ -31,10 +32,8 @@ import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.SpringBootTest.WebEnvironment;
 import org.springframework.boot.web.server.LocalServerPort;
-import org.springframework.cloud.sleuth.util.ArrayListSpanReporter;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.test.context.junit4.SpringRunner;
 import org.springframework.util.MultiValueMap;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestHeader;
@@ -43,7 +42,6 @@ import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 
 @SpringBootTest(webEnvironment = WebEnvironment.RANDOM_PORT)
-@RunWith(SpringRunner.class)
 public class GH1102Tests {
 
 	@Autowired
@@ -54,9 +52,6 @@ public class GH1102Tests {
 
 	@Autowired
 	TestRetry testRetry;
-
-	@Autowired
-	ArrayListSpanReporter reporter;
 
 	@LocalServerPort
 	int port;
@@ -76,6 +71,7 @@ public class GH1102Tests {
 			foo.finish();
 		}
 
+		// Default inject format for client spans is B3 multi
 		BDDAssertions.then(this.testRetry.getHttpHeaders().get("x-b3-traceid"))
 				.hasSize(1);
 	}
@@ -90,8 +86,8 @@ public class GH1102Tests {
 		}
 
 		@Bean
-		ArrayListSpanReporter reporter() {
-			return new ArrayListSpanReporter();
+		SpanHandler testSpanHandler() {
+			return new TestSpanHandler();
 		}
 
 		@Bean

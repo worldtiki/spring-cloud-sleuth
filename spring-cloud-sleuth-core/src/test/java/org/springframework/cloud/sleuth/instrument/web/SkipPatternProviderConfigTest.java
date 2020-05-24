@@ -23,13 +23,12 @@ import java.util.Optional;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import org.springframework.boot.actuate.autoconfigure.endpoint.EndpointAutoConfiguration;
 import org.springframework.boot.actuate.autoconfigure.endpoint.web.WebEndpointAutoConfiguration;
 import org.springframework.boot.actuate.autoconfigure.endpoint.web.WebEndpointProperties;
 import org.springframework.boot.actuate.autoconfigure.health.HealthEndpointAutoConfiguration;
-import org.springframework.boot.actuate.autoconfigure.health.HealthIndicatorAutoConfiguration;
 import org.springframework.boot.actuate.autoconfigure.info.InfoEndpointAutoConfiguration;
 import org.springframework.boot.actuate.autoconfigure.web.server.ManagementContextAutoConfiguration;
 import org.springframework.boot.actuate.autoconfigure.web.server.ManagementServerProperties;
@@ -56,10 +55,16 @@ public class SkipPatternProviderConfigTest {
 			.withConfiguration(AutoConfigurations.of(
 					DispatcherServletAutoConfiguration.class,
 					InfoEndpointAutoConfiguration.class,
-					HealthIndicatorAutoConfiguration.class,
 					HealthEndpointAutoConfiguration.class,
 					EndpointAutoConfiguration.class, WebEndpointAutoConfiguration.class,
-					TraceAutoConfiguration.class, TraceWebAutoConfiguration.class));
+					TraceAutoConfiguration.class, SkipPatternConfiguration.class));
+
+	@Test
+	public void should_return_null_when_cleared() throws Exception {
+		contextRunner.withPropertyValues("spring.sleuth.web.skip-pattern")
+				.run(context -> then(context.getBean("sleuthSkipPatternProvider"))
+						.hasToString("null"));
+	}
 
 	@Test
 	public void should_pick_skip_pattern_from_sleuth_properties() throws Exception {
@@ -84,7 +89,7 @@ public class SkipPatternProviderConfigTest {
 	@Test
 	public void should_return_empty_when_management_context_has_no_context_path()
 			throws Exception {
-		Optional<Pattern> pattern = new TraceWebAutoConfiguration.ManagementSkipPatternProviderConfig()
+		Optional<Pattern> pattern = new SkipPatternConfiguration.ManagementSkipPatternProviderConfig()
 				.skipPatternForManagementServerProperties(
 						new ManagementServerProperties())
 				.skipPattern();
@@ -109,7 +114,7 @@ public class SkipPatternProviderConfigTest {
 	@Test
 	public void should_return_empty_when_no_endpoints() {
 		EndpointsSupplier<ExposableWebEndpoint> endpointsSupplier = Collections::emptyList;
-		Optional<Pattern> pattern = new TraceWebAutoConfiguration.ActuatorSkipPatternProviderConfig()
+		Optional<Pattern> pattern = new SkipPatternConfiguration.ActuatorSkipPatternProviderConfig()
 				.skipPatternForActuatorEndpointsSamePort(new ServerProperties(),
 						new WebEndpointProperties(), endpointsSupplier)
 				.skipPattern();
@@ -231,7 +236,7 @@ public class SkipPatternProviderConfigTest {
 
 	@Test
 	public void should_combine_skip_patterns_from_list() throws Exception {
-		TraceWebAutoConfiguration configuration = new TraceWebAutoConfiguration();
+		SkipPatternConfiguration configuration = new SkipPatternConfiguration();
 		configuration.patterns.addAll(Arrays.asList(foo(), bar()));
 
 		Pattern pattern = configuration.sleuthSkipPatternProvider().skipPattern();

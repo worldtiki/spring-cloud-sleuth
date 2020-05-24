@@ -20,26 +20,25 @@ import java.util.ArrayList;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 
+import brave.Span;
 import brave.Tracer;
 import brave.Tracing;
+import brave.handler.MutableSpan;
+import brave.handler.SpanHandler;
 import brave.sampler.Sampler;
+import brave.test.TestSpanHandler;
 import org.assertj.core.api.BDDAssertions;
 import org.awaitility.Awaitility;
-import org.junit.Before;
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import zipkin2.Span;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.cloud.sleuth.instrument.web.TraceWebServletAutoConfiguration;
-import org.springframework.cloud.sleuth.util.ArrayListSpanReporter;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.env.Environment;
 import org.springframework.http.ResponseEntity;
-import org.springframework.test.context.junit4.SpringJUnit4ClassRunner;
 import org.springframework.util.concurrent.ListenableFuture;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -51,7 +50,7 @@ import static org.springframework.boot.test.context.SpringBootTest.WebEnvironmen
 /**
  * @author Marcin Grzejszczak
  */
-@RunWith(SpringJUnit4ClassRunner.class)
+
 @SpringBootTest(
 		classes = { TraceWebAsyncClientAutoConfigurationTests.TestConfiguration.class },
 		webEnvironment = RANDOM_PORT)
@@ -64,14 +63,14 @@ public class TraceWebAsyncClientAutoConfigurationTests {
 	Environment environment;
 
 	@Autowired
-	ArrayListSpanReporter accumulator;
+	TestSpanHandler spans;
 
 	@Autowired
 	Tracing tracer;
 
-	@Before
+	@BeforeEach
 	public void setup() {
-		this.accumulator.clear();
+		this.spans.clear();
 	}
 
 	@Test
@@ -92,17 +91,17 @@ public class TraceWebAsyncClientAutoConfigurationTests {
 		}
 
 		Awaitility.await().untilAsserted(() -> {
-			then(this.accumulator.getSpans().stream()
+			then(this.spans.spans().stream()
 					.filter(span -> Span.Kind.CLIENT == span.kind()).findFirst().get())
-							.matches(span -> span.duration() >= TimeUnit.MILLISECONDS
-									.toMicros(100));
+							.matches(span -> span.finishTimestamp()
+									- span.startTimestamp() >= TimeUnit.MILLISECONDS
+											.toMicros(100));
 			then(this.tracer.tracer().currentSpan()).isNull();
 		});
 	}
 
 	@Test
-	public void should_close_span_upon_failure_callback()
-			throws ExecutionException, InterruptedException {
+	public void should_close_span_upon_failure_callback() {
 		ListenableFuture<ResponseEntity<String>> future;
 		try {
 			future = this.asyncRestTemplate.getForEntity(
@@ -114,10 +113,10 @@ public class TraceWebAsyncClientAutoConfigurationTests {
 		}
 
 		Awaitility.await().untilAsserted(() -> {
-			Span reportedRpcSpan = new ArrayList<>(this.accumulator.getSpans()).stream()
+			MutableSpan reportedRpcSpan = new ArrayList<>(this.spans.spans()).stream()
 					.filter(span -> Span.Kind.CLIENT == span.kind()).findFirst().get();
-			then(reportedRpcSpan).matches(
-					span -> span.duration() >= TimeUnit.MILLISECONDS.toMicros(100));
+			then(reportedRpcSpan).matches(span -> span.finishTimestamp()
+					- span.startTimestamp() >= TimeUnit.MILLISECONDS.toMicros(100));
 			then(reportedRpcSpan.tags()).containsKey("error");
 			then(this.tracer.tracer().currentSpan()).isNull();
 		});
@@ -129,15 +128,14 @@ public class TraceWebAsyncClientAutoConfigurationTests {
 
 	@EnableAutoConfiguration(
 			// spring boot test will otherwise instrument the client and server with the
-			// same bean factory
-			// which isn't expected
-			exclude = TraceWebServletAutoConfiguration.class)
+			// same bean factory which isn't expected
+			excludeName = "org.springframework.cloud.sleuth.instrument.web.TraceWebServletAutoConfiguration")
 	@Configuration
 	public static class TestConfiguration {
 
 		@Bean
-		ArrayListSpanReporter reporter() {
-			return new ArrayListSpanReporter();
+		SpanHandler testSpanHandler() {
+			return new TestSpanHandler();
 		}
 
 		@Bean

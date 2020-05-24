@@ -17,7 +17,6 @@
 package org.springframework.cloud.sleuth.instrument.messaging;
 
 import java.lang.reflect.Field;
-import java.util.Collections;
 import java.util.List;
 
 import brave.Span;
@@ -25,7 +24,10 @@ import brave.Tracer;
 import brave.Tracing;
 import brave.jms.JmsTracing;
 import brave.kafka.clients.KafkaTracing;
-import brave.propagation.Propagation;
+import brave.messaging.MessagingRequest;
+import brave.messaging.MessagingTracing;
+import brave.messaging.MessagingTracingCustomizer;
+import brave.sampler.SamplerFunction;
 import brave.spring.rabbit.SpringRabbitTracing;
 import org.aopalliance.intercept.MethodInterceptor;
 import org.aopalliance.intercept.MethodInvocation;
@@ -52,8 +54,6 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
-import org.springframework.cloud.aws.messaging.config.QueueMessageHandlerFactory;
-import org.springframework.cloud.aws.messaging.listener.QueueMessageHandler;
 import org.springframework.cloud.sleuth.autoconfig.TraceAutoConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -66,12 +66,7 @@ import org.springframework.kafka.listener.AbstractMessageListenerContainer;
 import org.springframework.kafka.listener.MessageListener;
 import org.springframework.kafka.listener.MessageListenerContainer;
 import org.springframework.kafka.listener.adapter.MessagingMessageListenerAdapter;
-import org.springframework.kafka.support.DefaultKafkaHeaderMapper;
-import org.springframework.messaging.Message;
-import org.springframework.messaging.MessagingException;
-import org.springframework.messaging.converter.MessageConverter;
-import org.springframework.messaging.support.MessageHeaderAccessor;
-import org.springframework.util.CollectionUtils;
+import org.springframework.lang.Nullable;
 import org.springframework.util.ReflectionUtils;
 
 /**
@@ -81,15 +76,41 @@ import org.springframework.util.ReflectionUtils;
  * @author Marcin Grzejszczak
  * @since 2.0.0
  */
-@Configuration
+@Configuration(proxyBeanMethods = false)
 @ConditionalOnBean(Tracing.class)
+@ConditionalOnClass(MessagingTracing.class)
 @AutoConfigureAfter({ TraceAutoConfiguration.class,
 		TraceSpringMessagingAutoConfiguration.class })
 @OnMessagingEnabled
 @EnableConfigurationProperties(SleuthMessagingProperties.class)
+// public allows @AutoConfigureAfter(TraceMessagingAutoConfiguration)
+// for components needing MessagingTracing
 public class TraceMessagingAutoConfiguration {
 
-	@Configuration
+	@Bean
+	@ConditionalOnMissingBean
+	// NOTE: stable bean name as might be used outside sleuth
+	MessagingTracing messagingTracing(Tracing tracing,
+			@Nullable @ProducerSampler SamplerFunction<MessagingRequest> producerSampler,
+			@Nullable @ConsumerSampler SamplerFunction<MessagingRequest> consumerSampler,
+			@Nullable List<MessagingTracingCustomizer> messagingTracingCustomizers) {
+
+		MessagingTracing.Builder builder = MessagingTracing.newBuilder(tracing);
+		if (producerSampler != null) {
+			builder.producerSampler(producerSampler);
+		}
+		if (consumerSampler != null) {
+			builder.consumerSampler(consumerSampler);
+		}
+		if (messagingTracingCustomizers != null) {
+			for (MessagingTracingCustomizer customizer : messagingTracingCustomizers) {
+				customizer.customize(builder);
+			}
+		}
+		return builder.build();
+	}
+
+	@Configuration(proxyBeanMethods = false)
 	@ConditionalOnProperty(value = "spring.sleuth.messaging.rabbit.enabled",
 			matchIfMissing = true)
 	@ConditionalOnClass(RabbitTemplate.class)
@@ -105,9 +126,9 @@ public class TraceMessagingAutoConfiguration {
 
 		@Bean
 		@ConditionalOnMissingBean
-		SpringRabbitTracing springRabbitTracing(Tracing tracing,
+		SpringRabbitTracing springRabbitTracing(MessagingTracing messagingTracing,
 				SleuthMessagingProperties properties) {
-			return SpringRabbitTracing.newBuilder(tracing)
+			return SpringRabbitTracing.newBuilder(messagingTracing)
 					.remoteServiceName(
 							properties.getMessaging().getRabbit().getRemoteServiceName())
 					.build();
@@ -115,7 +136,7 @@ public class TraceMessagingAutoConfiguration {
 
 	}
 
-	@Configuration
+	@Configuration(proxyBeanMethods = false)
 	@ConditionalOnProperty(value = "spring.sleuth.messaging.kafka.enabled",
 			matchIfMissing = true)
 	@ConditionalOnClass(ProducerFactory.class)
@@ -123,26 +144,12 @@ public class TraceMessagingAutoConfiguration {
 
 		@Bean
 		@ConditionalOnMissingBean
-		KafkaTracing kafkaTracing(Tracing tracing, SleuthMessagingProperties properties) {
-			return KafkaTracing.newBuilder(tracing)
+		KafkaTracing kafkaTracing(MessagingTracing messagingTracing,
+				SleuthMessagingProperties properties) {
+			return KafkaTracing.newBuilder(messagingTracing)
 					.remoteServiceName(
 							properties.getMessaging().getKafka().getRemoteServiceName())
 					.build();
-		}
-
-		@Bean(name = SleuthDefaultKafkaHeaderMapper.BEAN_NAME)
-		@ConditionalOnMissingBean
-		DefaultKafkaHeaderMapper sleuthDefaultKafkaHeaderMapper() {
-			return new SleuthDefaultKafkaHeaderMapper();
-		}
-
-		@Bean
-		@ConditionalOnProperty(value = "spring.sleuth.messaging.kafka.mapper.enabled",
-				matchIfMissing = true)
-		// for tests
-		@ConditionalOnMissingBean
-		SleuthKafkaHeaderMapperBeanPostProcessor sleuthDefaultKafkaHeaderMapperBeanPostProcessor() {
-			return new SleuthKafkaHeaderMapperBeanPostProcessor();
 		}
 
 		@Bean
@@ -154,7 +161,7 @@ public class TraceMessagingAutoConfiguration {
 
 	}
 
-	@Configuration
+	@Configuration(proxyBeanMethods = false)
 	@ConditionalOnProperty(value = "spring.sleuth.messaging.jms.enabled",
 			matchIfMissing = true)
 	@ConditionalOnClass(JmsListenerConfigurer.class)
@@ -164,8 +171,9 @@ public class TraceMessagingAutoConfiguration {
 
 		@Bean
 		@ConditionalOnMissingBean
-		JmsTracing jmsTracing(Tracing tracing, SleuthMessagingProperties properties) {
-			return JmsTracing.newBuilder(tracing)
+		JmsTracing jmsTracing(MessagingTracing messagingTracing,
+				SleuthMessagingProperties properties) {
+			return JmsTracing.newBuilder(messagingTracing)
 					.remoteServiceName(
 							properties.getMessaging().getJms().getRemoteServiceName())
 					.build();
@@ -183,8 +191,8 @@ public class TraceMessagingAutoConfiguration {
 		JmsListenerConfigurer configureTracing(BeanFactory beanFactory,
 				JmsListenerEndpointRegistry defaultRegistry) {
 			return registrar -> {
-				TracingJmsBeanPostProcessor processor = tracingJmsBeanPostProcessor(
-						beanFactory);
+				TracingJmsBeanPostProcessor processor = beanFactory
+						.getBean(TracingJmsBeanPostProcessor.class);
 				JmsListenerEndpointRegistry registry = registrar.getEndpointRegistry();
 				registrar.setEndpointRegistry((JmsListenerEndpointRegistry) processor
 						.wrap(registry == null ? defaultRegistry : registry));
@@ -195,28 +203,6 @@ public class TraceMessagingAutoConfiguration {
 		@Bean
 		TracingJmsBeanPostProcessor tracingJmsBeanPostProcessor(BeanFactory beanFactory) {
 			return new TracingJmsBeanPostProcessor(beanFactory);
-		}
-
-	}
-
-	@Configuration
-	@ConditionalOnProperty(value = "spring.sleuth.messaging.sqs.enabled",
-			matchIfMissing = true)
-	@ConditionalOnClass(QueueMessageHandler.class)
-	protected static class SleuthSqsConfiguration {
-
-		@Bean
-		TracingMethodMessageHandlerAdapter tracingMethodMessageHandlerAdapter(
-				Tracing tracing,
-				Propagation.Getter<MessageHeaderAccessor, String> traceMessagePropagationGetter) {
-			return new TracingMethodMessageHandlerAdapter(tracing,
-					traceMessagePropagationGetter);
-		}
-
-		@Bean
-		QueueMessageHandlerFactory sqsQueueMessageHandlerFactory(
-				TracingMethodMessageHandlerAdapter tracingMethodMessageHandlerAdapter) {
-			return new SqsQueueMessageHandlerFactory(tracingMethodMessageHandlerAdapter);
 		}
 
 	}
@@ -421,84 +407,6 @@ class TracingJmsBeanPostProcessor implements BeanPostProcessor {
 	private boolean typeMatches(Object bean) {
 		return bean instanceof JmsListenerEndpointRegistry
 				&& !(bean instanceof TracingJmsListenerEndpointRegistry);
-	}
-
-}
-
-class SleuthDefaultKafkaHeaderMapper extends DefaultKafkaHeaderMapper {
-
-	// related to #1430
-	static final String BEAN_NAME = "kafkaBinderHeaderMapper";
-
-	SleuthDefaultKafkaHeaderMapper() {
-		setMapAllStringsOut(true);
-	}
-
-}
-
-class SleuthKafkaHeaderMapperBeanPostProcessor implements BeanPostProcessor {
-
-	@Override
-	public Object postProcessAfterInitialization(Object bean, String beanName)
-			throws BeansException {
-		if (bean instanceof SleuthDefaultKafkaHeaderMapper) {
-			return sleuthDefaultKafkaHeaderMapper(bean);
-		}
-		else if (bean instanceof DefaultKafkaHeaderMapper) {
-			((DefaultKafkaHeaderMapper) bean).setMapAllStringsOut(true);
-		}
-		return bean;
-	}
-
-	Object sleuthDefaultKafkaHeaderMapper(Object bean) {
-		return bean;
-	}
-
-}
-
-class SqsQueueMessageHandlerFactory extends QueueMessageHandlerFactory {
-
-	private TracingMethodMessageHandlerAdapter handlerAdapter;
-
-	SqsQueueMessageHandlerFactory(TracingMethodMessageHandlerAdapter handlerAdapter) {
-		this.handlerAdapter = handlerAdapter;
-	}
-
-	@Override
-	public QueueMessageHandler createQueueMessageHandler() {
-		if (CollectionUtils.isEmpty(getMessageConverters())) {
-			return new SqsQueueMessageHandler(handlerAdapter, Collections.emptyList());
-		}
-		return new SqsQueueMessageHandler(handlerAdapter, getMessageConverters());
-	}
-
-}
-
-class SqsQueueMessageHandler extends QueueMessageHandler {
-
-	// copied from QueueMessageHandler
-	private static final String LOGICAL_RESOURCE_ID = "LogicalResourceId";
-
-	private TracingMethodMessageHandlerAdapter handlerAdapter;
-
-	SqsQueueMessageHandler(TracingMethodMessageHandlerAdapter handlerAdapter,
-			List<MessageConverter> messageConverters) {
-		super(messageConverters);
-		this.handlerAdapter = handlerAdapter;
-	}
-
-	@Override
-	public void handleMessage(Message<?> message) throws MessagingException {
-		handlerAdapter.wrapMethodMessageHandler(message, super::handleMessage,
-				this::messageSpanTagger);
-	}
-
-	private void messageSpanTagger(Span span, Message<?> message) {
-		span.remoteServiceName("sqs");
-		if (message.getHeaders().get(LOGICAL_RESOURCE_ID) != null) {
-			span.tag("sqs.queue_url",
-					message.getHeaders().get(LOGICAL_RESOURCE_ID).toString());
-		}
 	}
 
 }

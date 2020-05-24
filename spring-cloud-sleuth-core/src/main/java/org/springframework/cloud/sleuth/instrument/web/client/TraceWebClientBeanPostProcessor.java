@@ -16,17 +16,19 @@
 
 package org.springframework.cloud.sleuth.instrument.web.client;
 
-import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
 import brave.Span;
-import brave.Tracer;
-import brave.Tracing;
 import brave.http.HttpClientHandler;
+import brave.http.HttpClientRequest;
+import brave.http.HttpClientResponse;
 import brave.http.HttpTracing;
-import brave.propagation.Propagation;
+import brave.propagation.CurrentTraceContext;
+import brave.propagation.CurrentTraceContext.Scope;
 import brave.propagation.TraceContext;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -37,17 +39,17 @@ import reactor.core.publisher.Mono;
 import reactor.util.annotation.Nullable;
 import reactor.util.context.Context;
 
-import org.springframework.beans.BeansException;
-import org.springframework.beans.factory.BeanFactory;
 import org.springframework.beans.factory.config.BeanPostProcessor;
-import org.springframework.cloud.sleuth.instrument.reactor.ReactorSleuth;
+import org.springframework.cloud.sleuth.internal.LazyBean;
+import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.core.io.buffer.DataBuffer;
-import org.springframework.web.client.RestClientException;
 import org.springframework.web.reactive.function.client.ClientRequest;
 import org.springframework.web.reactive.function.client.ClientResponse;
 import org.springframework.web.reactive.function.client.ExchangeFilterFunction;
 import org.springframework.web.reactive.function.client.ExchangeFunction;
 import org.springframework.web.reactive.function.client.WebClient;
+
+import static org.springframework.cloud.sleuth.instrument.reactor.ReactorSleuth.scopePassingSpanOperator;
 
 /**
  * {@link BeanPostProcessor} to wrap a {@link WebClient} instance into its trace
@@ -58,21 +60,19 @@ import org.springframework.web.reactive.function.client.WebClient;
  */
 final class TraceWebClientBeanPostProcessor implements BeanPostProcessor {
 
-	private final BeanFactory beanFactory;
+	final ConfigurableApplicationContext springContext;
 
-	TraceWebClientBeanPostProcessor(BeanFactory beanFactory) {
-		this.beanFactory = beanFactory;
+	TraceWebClientBeanPostProcessor(ConfigurableApplicationContext springContext) {
+		this.springContext = springContext;
 	}
 
 	@Override
-	public Object postProcessBeforeInitialization(Object bean, String beanName)
-			throws BeansException {
+	public Object postProcessBeforeInitialization(Object bean, String beanName) {
 		return bean;
 	}
 
 	@Override
-	public Object postProcessAfterInitialization(Object bean, String beanName)
-			throws BeansException {
+	public Object postProcessAfterInitialization(Object bean, String beanName) {
 		if (bean instanceof WebClient) {
 			WebClient webClient = (WebClient) bean;
 			return wrapBuilder(webClient.mutate()).build();
@@ -92,7 +92,7 @@ final class TraceWebClientBeanPostProcessor implements BeanPostProcessor {
 		return functions -> {
 			boolean noneMatch = noneMatchTraceExchangeFunction(functions);
 			if (noneMatch) {
-				functions.add(new TraceExchangeFilterFunction(this.beanFactory));
+				functions.add(new TraceExchangeFilterFunction(this.springContext));
 			}
 		};
 	}
@@ -112,95 +112,43 @@ final class TraceWebClientBeanPostProcessor implements BeanPostProcessor {
 final class TraceExchangeFilterFunction implements ExchangeFilterFunction {
 
 	private static final Log log = LogFactory.getLog(TraceExchangeFilterFunction.class);
-	static final Propagation.Setter<ClientRequest.Builder, String> SETTER = new Propagation.Setter<ClientRequest.Builder, String>() {
-		@Override
-		public void put(ClientRequest.Builder carrier, String key, String value) {
-			carrier.headers(httpHeaders -> {
-				if (log.isTraceEnabled()) {
-					log.trace("Replacing [" + key + "] with value [" + value + "]");
-				}
-				httpHeaders.merge(key, Collections.singletonList(value),
-						(oldValue, newValue) -> newValue);
-			});
-		}
 
-		@Override
-		public String toString() {
-			return "ClientRequest.Builder::header";
-		}
-	};
-
-	private static final String CLIENT_SPAN_KEY = "sleuth.webclient.clientSpan";
-
-	private static final String CANCELLED_SUBSCRIPTION_ERROR = "CANCELLED";
-
-	final BeanFactory beanFactory;
+	final LazyBean<HttpTracing> httpTracing;
 
 	final Function<? super Publisher<DataBuffer>, ? extends Publisher<DataBuffer>> scopePassingTransformer;
 
-	Tracer tracer;
+	// Lazy initialized fields
+	HttpClientHandler<HttpClientRequest, HttpClientResponse> handler;
 
-	HttpTracing httpTracing;
+	CurrentTraceContext currentTraceContext;
 
-	HttpClientHandler<ClientRequest, ClientResponse> handler;
-
-	TraceContext.Injector<ClientRequest.Builder> injector;
-
-	TraceExchangeFilterFunction(BeanFactory beanFactory) {
-		this.beanFactory = beanFactory;
-		this.scopePassingTransformer = ReactorSleuth
-				.scopePassingSpanOperator(beanFactory);
+	TraceExchangeFilterFunction(ConfigurableApplicationContext springContext) {
+		this.httpTracing = LazyBean.create(springContext, HttpTracing.class);
+		this.scopePassingTransformer = scopePassingSpanOperator(springContext);
 	}
 
-	public static ExchangeFilterFunction create(BeanFactory beanFactory) {
-		return new TraceExchangeFilterFunction(beanFactory);
+	public static ExchangeFilterFunction create(
+			ConfigurableApplicationContext springContext) {
+		return new TraceExchangeFilterFunction(springContext);
 	}
 
 	@Override
 	public Mono<ClientResponse> filter(ClientRequest request, ExchangeFunction next) {
-		ClientRequest.Builder builder = ClientRequest.from(request);
-		if (log.isDebugEnabled()) {
-			log.debug("Instrumenting WebClient call");
-		}
-		Span span = handler().handleSend(injector(), builder, request,
-				tracer().nextSpan());
-		if (log.isDebugEnabled()) {
-			log.debug("Handled send of " + span);
-		}
-
-		return new MonoWebClientTrace(next, builder.build(), this, span);
+		return new MonoWebClientTrace(next, request, this);
 	}
 
-	@SuppressWarnings("unchecked")
-	HttpClientHandler<ClientRequest, ClientResponse> handler() {
+	CurrentTraceContext currentTraceContext() {
+		if (this.currentTraceContext == null) {
+			this.currentTraceContext = httpTracing.get().tracing().currentTraceContext();
+		}
+		return this.currentTraceContext;
+	}
+
+	HttpClientHandler<HttpClientRequest, HttpClientResponse> handler() {
 		if (this.handler == null) {
-			this.handler = HttpClientHandler.create(
-					this.beanFactory.getBean(HttpTracing.class),
-					new TraceExchangeFilterFunction.HttpAdapter());
+			this.handler = HttpClientHandler.create(this.httpTracing.get());
 		}
 		return this.handler;
-	}
-
-	Tracer tracer() {
-		if (this.tracer == null) {
-			this.tracer = httpTracing().tracing().tracer();
-		}
-		return this.tracer;
-	}
-
-	HttpTracing httpTracing() {
-		if (this.httpTracing == null) {
-			this.httpTracing = this.beanFactory.getBean(HttpTracing.class);
-		}
-		return this.httpTracing;
-	}
-
-	TraceContext.Injector<ClientRequest.Builder> injector() {
-		if (this.injector == null) {
-			this.injector = this.beanFactory.getBean(HttpTracing.class).tracing()
-					.propagation().injector(SETTER);
-		}
-		return this.injector;
 	}
 
 	private static final class MonoWebClientTrace extends Mono<ClientResponse> {
@@ -209,28 +157,23 @@ final class TraceExchangeFilterFunction implements ExchangeFilterFunction {
 
 		final ClientRequest request;
 
-		final Tracer tracer;
+		final HttpClientHandler<HttpClientRequest, HttpClientResponse> handler;
 
-		final HttpClientHandler<ClientRequest, ClientResponse> handler;
-
-		final TraceContext.Injector<ClientRequest.Builder> injector;
-
-		final Tracing tracing;
+		final CurrentTraceContext currentTraceContext;
 
 		final Function<? super Publisher<DataBuffer>, ? extends Publisher<DataBuffer>> scopePassingTransformer;
 
-		private final Span span;
+		@Nullable
+		final TraceContext parent;
 
 		MonoWebClientTrace(ExchangeFunction next, ClientRequest request,
-				TraceExchangeFilterFunction parent, Span span) {
+				TraceExchangeFilterFunction filterFunction) {
 			this.next = next;
 			this.request = request;
-			this.tracer = parent.tracer();
-			this.handler = parent.handler();
-			this.injector = parent.injector();
-			this.tracing = parent.httpTracing().tracing();
-			this.scopePassingTransformer = parent.scopePassingTransformer;
-			this.span = span;
+			this.handler = filterFunction.handler();
+			this.currentTraceContext = filterFunction.currentTraceContext();
+			this.scopePassingTransformer = filterFunction.scopePassingTransformer;
+			this.parent = currentTraceContext.get();
 		}
 
 		@Override
@@ -238,188 +181,231 @@ final class TraceExchangeFilterFunction implements ExchangeFilterFunction {
 
 			Context context = subscriber.currentContext();
 
-			this.next.exchange(request).subscribe(
-					new WebClientTracerSubscriber(subscriber, context, span, this));
-		}
-
-		static final class WebClientTracerSubscriber
-				implements CoreSubscriber<ClientResponse> {
-
-			final CoreSubscriber<? super ClientResponse> actual;
-
-			final Context context;
-
-			final Span span;
-
-			final Tracer.SpanInScope ws;
-
-			final HttpClientHandler<ClientRequest, ClientResponse> handler;
-
-			final Function<? super Publisher<DataBuffer>, ? extends Publisher<DataBuffer>> scopePassingTransformer;
-
-			final Tracing tracing;
-
-			boolean done;
-
-			WebClientTracerSubscriber(CoreSubscriber<? super ClientResponse> actual,
-					Context context, Span span, MonoWebClientTrace parent) {
-				this.actual = actual;
-				this.span = span;
-				this.handler = parent.handler;
-				this.tracing = parent.tracing;
-				this.scopePassingTransformer = parent.scopePassingTransformer;
-
-				if (!context.hasKey(Span.class)) {
-					context = context.put(Span.class, span);
-					if (log.isDebugEnabled()) {
-						log.debug("Reactor Context got injected with the client span "
-								+ span);
-					}
-				}
-
-				this.context = context.put(CLIENT_SPAN_KEY, span);
-				this.ws = parent.tracer.withSpanInScope(span);
-
+			ClientRequestWrapper wrapper = new ClientRequestWrapper(request);
+			Span span = handler.handleSendWithParent(wrapper, parent);
+			if (log.isDebugEnabled()) {
+				log.debug("HttpClientHandler::handleSend: " + span);
 			}
 
-			@Override
-			public void onSubscribe(Subscription subscription) {
-				this.actual.onSubscribe(new Subscription() {
-					@Override
-					public void request(long n) {
-						subscription.request(n);
-					}
-
-					@Override
-					public void cancel() {
-						terminateSpanOnCancel();
-						subscription.cancel();
-					}
-				});
-			}
-
-			@Override
-			public void onNext(ClientResponse response) {
-				this.done = true;
-				try {
-					// decorate response body
-					this.actual
-							.onNext(ClientResponse.from(response)
-									.body(response.bodyToFlux(DataBuffer.class)
-											.transform(this.scopePassingTransformer))
-									.build());
-				}
-				finally {
-					terminateSpan(response, null);
-				}
-			}
-
-			@Override
-			public void onError(Throwable t) {
-				try {
-					this.actual.onError(t);
-				}
-				finally {
-					terminateSpan(null, t);
-				}
-			}
-
-			@Override
-			public void onComplete() {
-				try {
-					this.actual.onComplete();
-				}
-				finally {
-					if (!this.done) {
-						terminateSpan(null, null);
-					}
-				}
-			}
-
-			@Override
-			public Context currentContext() {
-				return this.context;
-			}
-
-			void handleReceive(Span clientSpan, Tracer.SpanInScope ws,
-					ClientResponse clientResponse, Throwable throwable) {
-				this.handler.handleReceive(clientResponse, throwable, clientSpan);
-				ws.close();
-			}
-
-			void terminateSpanOnCancel() {
-				if (log.isDebugEnabled()) {
-					log.debug("Subscription was cancelled. Will close the span ["
-							+ this.span + "]");
-				}
-
-				this.span.tag("error", CANCELLED_SUBSCRIPTION_ERROR);
-				handleReceive(this.span, this.ws, null, null);
-			}
-
-			void terminateSpan(@Nullable ClientResponse clientResponse,
-					@Nullable Throwable throwable) {
-				if (clientResponse == null || clientResponse.statusCode() == null) {
-					if (log.isDebugEnabled()) {
-						log.debug("No response was returned. Will close the span ["
-								+ this.span + "]");
-					}
-					handleReceive(this.span, this.ws, clientResponse, throwable);
-					return;
-				}
-				boolean error = clientResponse.statusCode().is4xxClientError()
-						|| clientResponse.statusCode().is5xxServerError();
-				if (error) {
-					if (log.isDebugEnabled()) {
-						log.debug(
-								"Non positive status code was returned from the call. Will close the span ["
-										+ this.span + "]");
-					}
-					throwable = new RestClientException("Status code of the response is ["
-							+ clientResponse.statusCode().value()
-							+ "] and the reason is ["
-							+ clientResponse.statusCode().getReasonPhrase() + "]");
-				}
-				handleReceive(this.span, this.ws, clientResponse, throwable);
-			}
-
+			// NOTE: We are starting the client span for the request here, but it could be
+			// canceled prior to actually being invoked. TraceWebClientSubscription will
+			// abandon this span, if cancel() happens before request().
+			this.next.exchange(wrapper.buildRequest()).subscribe(
+					new TraceWebClientSubscriber(subscriber, context, span, this));
 		}
 
 	}
 
-	static final class HttpAdapter
-			extends brave.http.HttpClientAdapter<ClientRequest, ClientResponse> {
+	static final class TraceWebClientSubscriber extends AtomicReference<Span>
+			implements CoreSubscriber<ClientResponse> {
 
-		@Override
-		public String method(ClientRequest request) {
-			return request.method().name();
+		final CoreSubscriber<? super ClientResponse> actual;
+
+		final Context context;
+
+		@Nullable
+		final TraceContext parent;
+
+		final HttpClientHandler<HttpClientRequest, HttpClientResponse> handler;
+
+		final Function<? super Publisher<DataBuffer>, ? extends Publisher<DataBuffer>> scopePassingTransformer;
+
+		final CurrentTraceContext currentTraceContext;
+
+		TraceWebClientSubscriber(CoreSubscriber<? super ClientResponse> actual,
+				Context ctx, Span clientSpan, MonoWebClientTrace mono) {
+			this.actual = actual;
+			this.parent = mono.parent;
+			this.handler = mono.handler;
+			this.currentTraceContext = mono.currentTraceContext;
+			this.scopePassingTransformer = mono.scopePassingTransformer;
+			this.context = parent != null
+					&& !parent.equals(ctx.getOrDefault(TraceContext.class, null))
+							? ctx.put(TraceContext.class, parent) : ctx;
+			set(clientSpan);
 		}
 
 		@Override
-		public String url(ClientRequest request) {
-			return request.url().toString();
+		public void onSubscribe(Subscription subscription) {
+			this.actual.onSubscribe(new TraceWebClientSubscription(subscription, this));
 		}
 
 		@Override
-		public String requestHeader(ClientRequest request, String name) {
-			Object result = request.headers().getFirst(name);
-			return result != null ? result.toString() : null;
-		}
-
-		@Override
-		public Integer statusCode(ClientResponse response) {
-			int result = statusCodeAsInt(response);
-			return result != 0 ? result : null;
-		}
-
-		@Override
-		public int statusCodeAsInt(ClientResponse response) {
-			try {
-				return response.rawStatusCode();
+		public void onNext(ClientResponse response) {
+			try (Scope scope = currentTraceContext.maybeScope(parent)) {
+				// decorate response body
+				this.actual
+						.onNext(ClientResponse.from(response)
+								.body(response.bodyToFlux(DataBuffer.class)
+										.transform(this.scopePassingTransformer))
+								.build());
 			}
-			catch (Exception dontCare) {
-				return 0;
+			finally {
+				Span span = getAndSet(null);
+				if (span != null) {
+					// TODO: is there a way to read the request at response time?
+					this.handler.handleReceive(new ClientResponseWrapper(response), null,
+							span);
+				}
 			}
+		}
+
+		@Override
+		public void onError(Throwable t) {
+			try (Scope scope = currentTraceContext.maybeScope(parent)) {
+				this.actual.onError(t);
+			}
+			finally {
+				Span span = getAndSet(null);
+				if (span != null) {
+					span.error(t);
+					span.finish();
+				}
+			}
+		}
+
+		@Override
+		public void onComplete() {
+			try (Scope scope = currentTraceContext.maybeScope(parent)) {
+				this.actual.onComplete();
+			}
+			finally {
+				Span span = getAndSet(null);
+				if (span != null) {
+					// TODO: backfill empty test:
+					// https://github.com/spring-cloud/spring-cloud-sleuth/issues/1570
+					if (log.isDebugEnabled()) {
+						log.debug("Reached OnComplete without finishing [" + span + "]");
+					}
+					span.abandon();
+				}
+			}
+		}
+
+		@Override
+		public Context currentContext() {
+			return this.context;
+		}
+
+	}
+
+	static class TraceWebClientSubscription implements Subscription {
+
+		static final Exception CANCELLED_ERROR = new CancellationException("CANCELLED") {
+			@Override
+			public Throwable fillInStackTrace() {
+				return this; // stack trace doesn't add value here
+			}
+		};
+
+		final AtomicReference<Span> pendingSpan;
+
+		final Subscription delegate;
+
+		volatile boolean requested;
+
+		TraceWebClientSubscription(Subscription delegate,
+				AtomicReference<Span> pendingSpan) {
+			this.delegate = delegate;
+			this.pendingSpan = pendingSpan;
+		}
+
+		@Override
+		public void request(long n) {
+			requested = true;
+			delegate.request(n); // Not scoping to save overhead
+		}
+
+		@Override
+		public void cancel() {
+			delegate.cancel(); // Not scoping to save overhead
+
+			// Check to see if Subscription.cancel() happened after request(),
+			// but before another signal (like onComplete) completed the span.
+			Span span = pendingSpan.getAndSet(null);
+			if (span != null) {
+				if (log.isDebugEnabled()) {
+					log.debug(
+							"Subscription was cancelled. TraceWebClientBeanPostProcessor Will close the span ["
+									+ span + "]");
+				}
+
+				if (!requested) { // Abandon the span.
+					span.abandon();
+				}
+				else { // Request was canceled in-flight
+					span.error(CANCELLED_ERROR);
+					span.finish();
+				}
+			}
+		}
+
+	}
+
+	private static final class ClientRequestWrapper extends HttpClientRequest {
+
+		final ClientRequest delegate;
+
+		final ClientRequest.Builder builder;
+
+		ClientRequestWrapper(ClientRequest delegate) {
+			this.delegate = delegate;
+			this.builder = ClientRequest.from(delegate);
+		}
+
+		@Override
+		public Object unwrap() {
+			return delegate;
+		}
+
+		@Override
+		public String method() {
+			return delegate.method().name();
+		}
+
+		@Override
+		public String path() {
+			return delegate.url().getPath();
+		}
+
+		@Override
+		public String url() {
+			return delegate.url().toString();
+		}
+
+		@Override
+		public String header(String name) {
+			return delegate.headers().getFirst(name);
+		}
+
+		@Override
+		public void header(String name, String value) {
+			builder.header(name, value);
+		}
+
+		ClientRequest buildRequest() {
+			return builder.build();
+		}
+
+	}
+
+	static final class ClientResponseWrapper extends HttpClientResponse {
+
+		final ClientResponse delegate;
+
+		ClientResponseWrapper(ClientResponse delegate) {
+			this.delegate = delegate;
+		}
+
+		@Override
+		public Object unwrap() {
+			return delegate;
+		}
+
+		@Override
+		public int statusCode() {
+			// unlike statusCode(), this doesn't throw
+			return Math.max(delegate.rawStatusCode(), 0);
 		}
 
 	}

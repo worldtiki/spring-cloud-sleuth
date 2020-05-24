@@ -16,12 +16,14 @@
 
 package org.springframework.cloud.sleuth.instrument.web;
 
-import brave.http.HttpAdapter;
 import brave.http.HttpRequest;
-import brave.http.HttpSampler;
+import brave.http.HttpRequestParser;
+import brave.http.HttpResponseParser;
 import brave.http.HttpTracing;
 import brave.sampler.SamplerFunction;
-import org.junit.Test;
+import brave.sampler.SamplerFunctions;
+import org.assertj.core.api.BDDAssertions;
+import org.junit.jupiter.api.Test;
 
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.assertj.AssertableApplicationContext;
@@ -30,29 +32,31 @@ import org.springframework.boot.test.context.runner.ContextConsumer;
 import org.springframework.cloud.sleuth.autoconfig.TraceAutoConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.support.GenericApplicationContext;
 
 import static org.assertj.core.api.BDDAssertions.then;
 
 public class TraceHttpAutoConfigurationTests {
 
 	@Test
-	public void defaultsToSkipPatternHttpClientSampler() {
+	public void defaultsClientSamplerToDefer() {
 		contextRunner().run((context) -> {
 			SamplerFunction<HttpRequest> clientSampler = context
 					.getBean(HttpTracing.class).clientRequestSampler();
 
-			then(clientSampler).isInstanceOf(SkipPatternHttpClientSampler.class);
+			then(clientSampler).isSameAs(SamplerFunctions.deferDecision());
 		});
 	}
 
 	@Test
-	public void configuresUserProvidedDeprecatedClientSampler() {
-		contextRunner().withUserConfiguration(DeprecatedClientSamplerConfig.class)
+	public void configuresClientSkipPattern() throws Exception {
+		contextRunner()
+				.withPropertyValues("spring.sleuth.web.client.skip-pattern=foo.*|bar.*")
 				.run((context) -> {
 					SamplerFunction<HttpRequest> clientSampler = context
 							.getBean(HttpTracing.class).clientRequestSampler();
 
-					then(clientSampler).isSameAs(DeprecatedClientSamplerConfig.INSTANCE);
+					then(clientSampler).isInstanceOf(SkipPatternHttpClientSampler.class);
 				});
 	}
 
@@ -68,18 +72,7 @@ public class TraceHttpAutoConfigurationTests {
 	}
 
 	@Test
-	public void prefersUserProvidedHttpClientSampler() {
-		contextRunner().withUserConfiguration(DeprecatedClientSamplerConfig.class)
-				.withUserConfiguration(HttpClientSamplerConfig.class).run((context) -> {
-					SamplerFunction<HttpRequest> clientSampler = context
-							.getBean(HttpTracing.class).clientRequestSampler();
-
-					then(clientSampler).isSameAs(HttpClientSamplerConfig.INSTANCE);
-				});
-	}
-
-	@Test
-	public void defaultsToSkipPatternHttpServerSampler() {
+	public void defaultsServerSamplerToSkipPattern() {
 		contextRunner().run((context) -> {
 			SamplerFunction<HttpRequest> serverSampler = context
 					.getBean(HttpTracing.class).serverRequestSampler();
@@ -89,21 +82,19 @@ public class TraceHttpAutoConfigurationTests {
 	}
 
 	@Test
-	public void wrapsUserProvidedDeprecatedServerSampler() {
-		contextRunner().withUserConfiguration(DeprecatedServerSamplerConfig.class).run(
-				thenCompositeHttpServerSamplerOf(DeprecatedServerSamplerConfig.INSTANCE));
+	public void defaultsServerSamplerToDeferWhenSkipPatternCleared() {
+		contextRunner().withPropertyValues("spring.sleuth.web.skip-pattern")
+				.run((context) -> {
+					SamplerFunction<HttpRequest> clientSampler = context
+							.getBean(HttpTracing.class).serverRequestSampler();
+
+					then(clientSampler).isSameAs(SamplerFunctions.deferDecision());
+				});
 	}
 
 	@Test
 	public void wrapsUserProvidedHttpServerSampler() {
 		contextRunner().withUserConfiguration(HttpServerSamplerConfig.class)
-				.run(thenCompositeHttpServerSamplerOf(HttpServerSamplerConfig.INSTANCE));
-	}
-
-	@Test
-	public void prefersUserProvidedUserProvidedHttpServerSampler() {
-		contextRunner().withUserConfiguration(HttpServerSamplerConfig.class)
-				.withUserConfiguration(DeprecatedServerSamplerConfig.class)
 				.run(thenCompositeHttpServerSamplerOf(HttpServerSamplerConfig.INSTANCE));
 	}
 
@@ -122,11 +113,103 @@ public class TraceHttpAutoConfigurationTests {
 		};
 	}
 
+	@Test
+	public void defaultHttpClientParser() {
+		contextRunner().run((context) -> {
+			HttpRequestParser clientRequestParser = context.getBean(HttpTracing.class)
+					.clientRequestParser();
+			HttpResponseParser clientResponseParser = context.getBean(HttpTracing.class)
+					.clientResponseParser();
+
+			then(clientRequestParser).isInstanceOf(HttpRequestParser.Default.class);
+			then(clientResponseParser).isInstanceOf(HttpResponseParser.Default.class);
+		});
+	}
+
+	@Test
+	public void configuresUserProvidedHttpClientParser() {
+		contextRunner().withUserConfiguration(HttpClientParserConfig.class)
+				.run((context) -> {
+					HttpRequestParser clientRequestParser = context
+							.getBean(HttpTracing.class).clientRequestParser();
+					HttpResponseParser clientResponseParser = context
+							.getBean(HttpTracing.class).clientResponseParser();
+
+					then(clientRequestParser)
+							.isSameAs(HttpClientParserConfig.REQUEST_PARSER);
+					then(clientResponseParser)
+							.isSameAs(HttpClientParserConfig.RESPONSE_PARSER);
+				});
+	}
+
+	@Test
+	public void defaultHttpServerParser() {
+		contextRunner().run((context) -> {
+			HttpRequestParser serverRequestParser = context.getBean(HttpTracing.class)
+					.serverRequestParser();
+			HttpResponseParser serverResponseParser = context.getBean(HttpTracing.class)
+					.serverResponseParser();
+
+			then(serverRequestParser).isInstanceOf(HttpRequestParser.Default.class);
+			then(serverResponseParser).isInstanceOf(HttpResponseParser.Default.class);
+		});
+	}
+
+	@Test
+	public void configuresUserProvidedHttpServerParser() {
+		contextRunner().withUserConfiguration(HttpServerParserConfig.class)
+				.run((context) -> {
+					HttpRequestParser serverRequestParser = context
+							.getBean(HttpTracing.class).serverRequestParser();
+					HttpResponseParser serverResponseParser = context
+							.getBean(HttpTracing.class).serverResponseParser();
+
+					then(serverRequestParser)
+							.isSameAs(HttpServerParserConfig.REQUEST_PARSER);
+					then(serverResponseParser)
+							.isSameAs(HttpServerParserConfig.RESPONSE_PARSER);
+				});
+	}
+
+	/**
+	 * Shows bean aliases work to configure the same instance for both client and server
+	 */
+	@Test
+	public void configuresUserProvidedHttpClientAndServerParser() {
+		contextRunner().withUserConfiguration(HttpParserConfig.class).run((context) -> {
+			HttpRequestParser serverRequestParser = context.getBean(HttpTracing.class)
+					.serverRequestParser();
+			HttpResponseParser serverResponseParser = context.getBean(HttpTracing.class)
+					.serverResponseParser();
+			HttpRequestParser clientRequestParser = context.getBean(HttpTracing.class)
+					.clientRequestParser();
+			HttpResponseParser clientResponseParser = context.getBean(HttpTracing.class)
+					.clientResponseParser();
+
+			then(clientRequestParser).isSameAs(HttpParserConfig.REQUEST_PARSER);
+			then(clientResponseParser).isSameAs(HttpParserConfig.RESPONSE_PARSER);
+			then(serverRequestParser).isSameAs(HttpParserConfig.REQUEST_PARSER);
+			then(serverResponseParser).isSameAs(HttpParserConfig.RESPONSE_PARSER);
+		});
+	}
+
+	@Test
+	public void hasNoCycles() {
+		contextRunner()
+				.withConfiguration(AutoConfigurations.of(SkipPatternConfiguration.class,
+						TraceHttpAutoConfiguration.class))
+				.withInitializer(c -> ((GenericApplicationContext) c)
+						.setAllowCircularReferences(false))
+				.run((context) -> {
+					BDDAssertions.then(context.isRunning()).isEqualTo(true);
+				});
+	}
+
 	private ApplicationContextRunner contextRunner(String... propertyValues) {
 		return new ApplicationContextRunner().withPropertyValues(propertyValues)
 				.withConfiguration(AutoConfigurations.of(TraceAutoConfiguration.class,
 						TraceHttpAutoConfiguration.class,
-						TraceWebAutoConfiguration.class));
+						SkipPatternConfiguration.class));
 	}
 
 }
@@ -138,23 +221,6 @@ class HttpClientSamplerConfig {
 
 	@Bean(HttpClientSampler.NAME)
 	SamplerFunction<HttpRequest> sleuthHttpClientSampler() {
-		return INSTANCE;
-	}
-
-}
-
-@Configuration
-class DeprecatedClientSamplerConfig {
-
-	static final HttpSampler INSTANCE = new HttpSampler() {
-		@Override
-		public <Req> Boolean trySample(HttpAdapter<Req, ?> httpAdapter, Req req) {
-			return null;
-		}
-	};
-
-	@Bean(ClientSampler.NAME)
-	HttpSampler sleuthClientSampler() {
 		return INSTANCE;
 	}
 
@@ -173,18 +239,61 @@ class HttpServerSamplerConfig {
 }
 
 @Configuration
-class DeprecatedServerSamplerConfig {
+class HttpClientParserConfig {
 
-	static final HttpSampler INSTANCE = new HttpSampler() {
-		@Override
-		public <Req> Boolean trySample(HttpAdapter<Req, ?> httpAdapter, Req req) {
-			return null;
-		}
+	static final HttpRequestParser REQUEST_PARSER = (r, c, s) -> {
+	};
+	static final HttpResponseParser RESPONSE_PARSER = (r, c, s) -> {
 	};
 
-	@Bean(ServerSampler.NAME)
-	HttpSampler sleuthServerSampler() {
-		return INSTANCE;
+	@Bean(HttpClientRequestParser.NAME)
+	HttpRequestParser sleuthHttpClientRequestParser() {
+		return REQUEST_PARSER;
+	}
+
+	@Bean(HttpClientResponseParser.NAME)
+	HttpResponseParser sleuthHttpClientResponseParser() {
+		return RESPONSE_PARSER;
+	}
+
+}
+
+@Configuration
+class HttpServerParserConfig {
+
+	static final HttpRequestParser REQUEST_PARSER = (r, c, s) -> {
+	};
+	static final HttpResponseParser RESPONSE_PARSER = (r, c, s) -> {
+	};
+
+	@Bean(HttpServerRequestParser.NAME)
+	HttpRequestParser sleuthHttpServerRequestParser() {
+		return REQUEST_PARSER;
+	}
+
+	@Bean(HttpServerResponseParser.NAME)
+	HttpResponseParser sleuthHttpServerResponseParser() {
+		return RESPONSE_PARSER;
+	}
+
+}
+
+@Configuration
+class HttpParserConfig {
+
+	static final HttpRequestParser REQUEST_PARSER = (r, c, s) -> {
+	};
+	static final HttpResponseParser RESPONSE_PARSER = (r, c, s) -> {
+	};
+
+	@Bean(name = { HttpClientRequestParser.NAME, HttpServerRequestParser.NAME })
+	HttpRequestParser sleuthHttpServerRequestParser() {
+		return REQUEST_PARSER;
+	}
+
+	@Bean(name = { HttpClientResponseParser.NAME, HttpServerResponseParser.NAME })
+	HttpResponseParser sleuthHttpServerResponseParser() {
+		return RESPONSE_PARSER;
 	}
 
 }

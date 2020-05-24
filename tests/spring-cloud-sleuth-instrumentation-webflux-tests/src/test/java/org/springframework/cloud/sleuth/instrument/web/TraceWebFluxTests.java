@@ -16,14 +16,13 @@
 
 package org.springframework.cloud.sleuth.instrument.web;
 
-import java.util.List;
-import java.util.stream.Collectors;
-
 import brave.Span;
 import brave.Tracer;
+import brave.handler.SpanHandler;
 import brave.sampler.Sampler;
+import brave.test.TestSpanHandler;
 import org.awaitility.Awaitility;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
@@ -33,8 +32,6 @@ import reactor.core.publisher.Mono;
 import org.springframework.boot.WebApplicationType;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.builder.SpringApplicationBuilder;
-import org.springframework.cloud.sleuth.instrument.web.client.TraceWebClientAutoConfiguration;
-import org.springframework.cloud.sleuth.util.ArrayListSpanReporter;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -44,6 +41,9 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.reactive.function.client.ClientResponse;
 import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.web.reactive.function.server.RouterFunction;
+import org.springframework.web.reactive.function.server.RouterFunctions;
+import org.springframework.web.reactive.function.server.ServerResponse;
 
 import static org.assertj.core.api.BDDAssertions.then;
 
@@ -63,64 +63,77 @@ public class TraceWebFluxTests {
 								"security.basic.enabled=false",
 								"management.security.enabled=false")
 						.run();
-		ArrayListSpanReporter accumulator = context.getBean(ArrayListSpanReporter.class);
+		TestSpanHandler spans = context.getBean(TestSpanHandler.class);
 		int port = context.getBean(Environment.class).getProperty("local.server.port",
 				Integer.class);
 		Controller2 controller2 = context.getBean(Controller2.class);
-		clean(accumulator, controller2);
+		clean(spans, controller2);
 
 		// when
-		ClientResponse response = whenRequestIsSent(port);
+		ClientResponse response = whenRequestIsSent(port, "/api/c2/10");
 		// then
-		thenSpanWasReportedWithTags(accumulator, response);
-		clean(accumulator, controller2);
+		thenSpanWasReportedWithTags(spans, response);
+		clean(spans, controller2);
+
+		// when
+		response = whenRequestIsSent(port, "/api/fn/20");
+		// then
+		thenFunctionalSpanWasReportedWithTags(spans, response);
+		spans.clear();
 
 		// when
 		ClientResponse nonSampledResponse = whenNonSampledRequestIsSent(port);
 		// then
-		thenNoSpanWasReported(accumulator, nonSampledResponse, controller2);
-		accumulator.clear();
+		thenNoSpanWasReported(spans, nonSampledResponse, controller2);
+		spans.clear();
 
 		// when
 		ClientResponse skippedPatternResponse = whenRequestIsSentToSkippedPattern(port);
 		// then
-		thenNoSpanWasReported(accumulator, skippedPatternResponse, controller2);
+		thenNoSpanWasReported(spans, skippedPatternResponse, controller2);
 
 		// cleanup
 		context.close();
 	}
 
-	private void clean(ArrayListSpanReporter accumulator, Controller2 controller2) {
-		accumulator.clear();
+	private void clean(TestSpanHandler spans, Controller2 controller2) {
+		spans.clear();
 		controller2.span = null;
 	}
 
-	private void thenSpanWasReportedWithTags(ArrayListSpanReporter accumulator,
+	private void thenSpanWasReportedWithTags(TestSpanHandler spans,
 			ClientResponse response) {
 		Awaitility.await()
 				.untilAsserted(() -> then(response.statusCode().value()).isEqualTo(200));
-		List<zipkin2.Span> spans = accumulator.getSpans().stream()
-				.filter(span -> "get /api/c2/{id}".equals(span.name()))
-				.collect(Collectors.toList());
 		then(spans).hasSize(1);
-		then(spans.get(0).name()).isEqualTo("get /api/c2/{id}");
+		then(spans.get(0).name()).isEqualTo("GET /api/c2/{id}");
 		then(spans.get(0).tags()).containsEntry("mvc.controller.method", "successful")
 				.containsEntry("mvc.controller.class", "Controller2");
 	}
 
-	private void thenNoSpanWasReported(ArrayListSpanReporter accumulator,
-			ClientResponse response, Controller2 controller2) {
+	private void thenFunctionalSpanWasReportedWithTags(TestSpanHandler spans,
+			ClientResponse response) {
+		Awaitility.await()
+				.untilAsserted(() -> then(response.statusCode().value()).isEqualTo(200));
+		then(spans).hasSize(1);
+		then(spans.get(0).name()).isEqualTo("GET /api/fn/{id}");
+		then(spans.get(0).tags()).hasEntrySatisfying("mvc.controller.class",
+				value -> then(value).startsWith("TraceWebFluxTests$Config$$Lambda$"));
+	}
+
+	private void thenNoSpanWasReported(TestSpanHandler spans, ClientResponse response,
+			Controller2 controller2) {
 		Awaitility.await().untilAsserted(() -> {
 			then(response.statusCode().value()).isEqualTo(200);
-			then(accumulator.getSpans()).isEmpty();
+			then(spans).isEmpty();
 		});
 		then(controller2.span).isNotNull();
 		then(controller2.span.context().traceIdString()).isEqualTo(EXPECTED_TRACE_ID);
 	}
 
-	private ClientResponse whenRequestIsSent(int port) {
+	private ClientResponse whenRequestIsSent(int port, String path) {
 		Mono<ClientResponse> exchange = WebClient.create().get()
-				.uri("http://localhost:" + port + "/api/c2/10").exchange();
+				.uri("http://localhost:" + port + path).exchange();
 		return exchange.block();
 	}
 
@@ -133,14 +146,13 @@ public class TraceWebFluxTests {
 	private ClientResponse whenNonSampledRequestIsSent(int port) {
 		Mono<ClientResponse> exchange = WebClient.create().get()
 				.uri("http://localhost:" + port + "/api/c2/10")
-				.header("X-B3-SpanId", EXPECTED_TRACE_ID)
-				.header("X-B3-TraceId", EXPECTED_TRACE_ID).header("X-B3-Sampled", "0")
+				.header("b3", EXPECTED_TRACE_ID + "-" + EXPECTED_TRACE_ID + "-0")
 				.exchange();
 		return exchange.block();
 	}
 
 	@Configuration
-	@EnableAutoConfiguration(exclude = { TraceWebClientAutoConfiguration.class })
+	@EnableAutoConfiguration
 	static class Config {
 
 		private static final Logger log = LoggerFactory.getLogger(Config.class);
@@ -156,20 +168,21 @@ public class TraceWebFluxTests {
 		}
 
 		@Bean
-		ArrayListSpanReporter spanReporter() {
-			return new ArrayListSpanReporter() {
-				@Override
-				public List<zipkin2.Span> getSpans() {
-					List<zipkin2.Span> spans = super.getSpans();
-					log.info("Reported the following spans: \n\n" + spans);
-					return spans;
-				}
-			};
+		SpanHandler testSpanHandler() {
+			return new TestSpanHandler();
 		}
 
 		@Bean
 		Controller2 controller2(Tracer tracer) {
 			return new Controller2(tracer);
+		}
+
+		@Bean
+		RouterFunction<ServerResponse> route() {
+			return RouterFunctions.route()
+					.GET("/api/fn/{id}", serverRequest -> ServerResponse.ok()
+							.bodyValue(serverRequest.pathVariable("id")))
+					.build();
 		}
 
 	}
@@ -188,7 +201,7 @@ public class TraceWebFluxTests {
 		@GetMapping("/api/c2/{id}")
 		public Flux<String> successful(@PathVariable Long id) {
 			// #786
-			then(MDC.get("X-B3-TraceId")).isNotEmpty();
+			then(MDC.get("traceId")).isNotEmpty();
 			this.span = this.tracer.currentSpan();
 			return Flux.just(id.toString());
 		}

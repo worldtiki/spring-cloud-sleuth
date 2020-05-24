@@ -45,7 +45,7 @@ import org.springframework.context.annotation.Bean;
 @ConditionalOnProperty(value = "spring.sleuth.grpc.enabled", matchIfMissing = true)
 @ConditionalOnBean(RpcTracing.class)
 @AutoConfigureAfter(TraceRpcAutoConfiguration.class)
-public class TraceGrpcAutoConfiguration {
+class TraceGrpcAutoConfiguration {
 
 	@Bean
 	public GrpcTracing grpcTracing(RpcTracing rpcTracing) {

@@ -17,41 +17,34 @@
 package org.springframework.cloud.sleuth.instrument.web.client.exception;
 
 import java.io.IOException;
-import java.util.Collections;
 import java.util.Map;
+import java.util.stream.Stream;
 
 import brave.Span;
 import brave.Tracer;
 import brave.Tracing;
+import brave.handler.SpanHandler;
 import brave.sampler.Sampler;
-import com.netflix.loadbalancer.BaseLoadBalancer;
-import com.netflix.loadbalancer.ILoadBalancer;
-import com.netflix.loadbalancer.Server;
-import junitparams.JUnitParamsRunner;
-import junitparams.Parameters;
+import brave.test.TestSpanHandler;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
-import org.junit.Before;
-import org.junit.ClassRule;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.runner.RunWith;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.rule.OutputCapture;
 import org.springframework.cloud.client.loadbalancer.LoadBalanced;
-import org.springframework.cloud.netflix.ribbon.RibbonClient;
+import org.springframework.cloud.loadbalancer.annotation.LoadBalancerClient;
+import org.springframework.cloud.loadbalancer.core.ServiceInstanceListSupplier;
 import org.springframework.cloud.openfeign.EnableFeignClients;
 import org.springframework.cloud.openfeign.FeignClient;
-import org.springframework.cloud.sleuth.util.ArrayListSpanReporter;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.env.Environment;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
-import org.springframework.test.context.junit4.rules.SpringClassRule;
-import org.springframework.test.context.junit4.rules.SpringMethodRule;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestMethod;
 import org.springframework.web.client.RestTemplate;
@@ -59,23 +52,12 @@ import org.springframework.web.client.RestTemplate;
 import static org.assertj.core.api.Assertions.fail;
 import static org.assertj.core.api.BDDAssertions.then;
 
-@RunWith(JUnitParamsRunner.class)
 @SpringBootTest(classes = { WebClientExceptionTests.TestConfiguration.class },
-		properties = { "ribbon.ConnectTimeout=30000",
-				"spring.application.name=exceptionservice" },
+		properties = { "spring.application.name=exceptionservice" },
 		webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 public class WebClientExceptionTests {
 
-	@ClassRule
-	public static final SpringClassRule SCR = new SpringClassRule();
-
 	private static final Log log = LogFactory.getLog(WebClientExceptionTests.class);
-
-	@Rule
-	public final SpringMethodRule springMethodRule = new SpringMethodRule();
-
-	@Rule
-	public final OutputCapture capture = new OutputCapture();
 
 	@Autowired
 	TestFeignInterfaceWithException testFeignInterfaceWithException;
@@ -88,16 +70,16 @@ public class WebClientExceptionTests {
 	Tracing tracer;
 
 	@Autowired
-	ArrayListSpanReporter reporter;
+	TestSpanHandler spans;
 
-	@Before
+	@BeforeEach
 	public void open() {
-		this.reporter.clear();
+		this.spans.clear();
 	}
 
 	// issue #198
-	@Test
-	@Parameters
+	@ParameterizedTest
+	@MethodSource("parametersForShouldCloseSpanUponException")
 	public void shouldCloseSpanUponException(ResponseEntityProvider provider)
 			throws IOException {
 		Span span = this.tracer.tracer().nextSpan().name("new trace").start();
@@ -115,16 +97,16 @@ public class WebClientExceptionTests {
 		}
 
 		then(this.tracer.tracer().currentSpan()).isNull();
-		then(this.reporter.getSpans()).isNotEmpty();
-		then(this.reporter.getSpans().get(0).tags()).containsKey("error");
+		then(this.spans).isNotEmpty();
+		then(this.spans.get(0).error()).isNotNull();
 	}
 
-	Object[] parametersForShouldCloseSpanUponException() {
-		return new Object[] {
+	static Stream<Object> parametersForShouldCloseSpanUponException() {
+		return Stream.of(
 				(ResponseEntityProvider) (tests) -> tests.testFeignInterfaceWithException
 						.shouldFailToConnect(),
 				(ResponseEntityProvider) (tests) -> tests.template
-						.getForEntity("https://exceptionservice/", Map.class) };
+						.getForEntity("https://exceptionservice/", Map.class));
 	}
 
 	@FeignClient("exceptionservice")
@@ -145,8 +127,8 @@ public class WebClientExceptionTests {
 	@Configuration
 	@EnableAutoConfiguration
 	@EnableFeignClients
-	@RibbonClient(value = "exceptionservice",
-			configuration = ExceptionServiceRibbonClientConfiguration.class)
+	@LoadBalancerClient(value = "exceptionservice",
+			configuration = ExceptionServiceLoadBalancerClientConfiguration.class)
 	public static class TestConfiguration {
 
 		@LoadBalanced
@@ -164,21 +146,20 @@ public class WebClientExceptionTests {
 		}
 
 		@Bean
-		ArrayListSpanReporter accumulator() {
-			return new ArrayListSpanReporter();
+		SpanHandler testSpanHandler() {
+			return new TestSpanHandler();
 		}
 
 	}
 
 	@Configuration
-	public static class ExceptionServiceRibbonClientConfiguration {
+	public static class ExceptionServiceLoadBalancerClientConfiguration {
 
 		@Bean
-		public ILoadBalancer exceptionServiceRibbonLoadBalancer() {
-			BaseLoadBalancer balancer = new BaseLoadBalancer();
-			balancer.setServersList(Collections
-					.singletonList(new Server("invalid.host.to.break.tests", 1234)));
-			return balancer;
+		public ServiceInstanceListSupplier serviceInstanceListSupplier(Environment env) {
+			return ServiceInstanceListSupplier.fixed(env)
+					.instance("invalid.host.to.break.tests", 1234, "exceptionservice")
+					.build();
 		}
 
 	}

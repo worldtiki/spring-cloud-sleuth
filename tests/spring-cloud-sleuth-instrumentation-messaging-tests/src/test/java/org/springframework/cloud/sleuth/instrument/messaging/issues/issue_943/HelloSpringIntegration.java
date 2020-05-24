@@ -16,22 +16,21 @@
 
 package org.springframework.cloud.sleuth.instrument.messaging.issues.issue_943;
 
+import brave.handler.SpanHandler;
 import brave.sampler.Sampler;
+import brave.test.TestSpanHandler;
 
 import org.springframework.boot.SpringApplication;
-import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration;
 import org.springframework.boot.autoconfigure.orm.jpa.HibernateJpaAutoConfiguration;
-import org.springframework.cloud.sleuth.util.ArrayListSpanReporter;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.ImportResource;
 import org.springframework.integration.config.EnableIntegration;
 import org.springframework.scheduling.annotation.EnableAsync;
 import org.springframework.web.client.RestTemplate;
 
-@SpringBootApplication
-@EnableAutoConfiguration(exclude = { DataSourceAutoConfiguration.class,
+@SpringBootApplication(exclude = { DataSourceAutoConfiguration.class,
 		HibernateJpaAutoConfiguration.class })
 @ImportResource("classpath:beans/applicationContext.xml")
 @EnableIntegration
@@ -53,8 +52,8 @@ public class HelloSpringIntegration {
 	}
 
 	@Bean
-	ArrayListSpanReporter accumulator() {
-		return new ArrayListSpanReporter();
+	SpanHandler testSpanHandler() {
+		return new TestSpanHandler();
 	}
 
 }

@@ -25,7 +25,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * @since 1.3.1
  */
 @ConfigurationProperties("spring.zipkin.sender")
-public class ZipkinSenderProperties {
+class ZipkinSenderProperties {
 
 	/**
 	 * Means of sending spans to Zipkin.

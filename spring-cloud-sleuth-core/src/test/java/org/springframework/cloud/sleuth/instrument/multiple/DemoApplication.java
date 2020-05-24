@@ -20,6 +20,7 @@ import java.util.Arrays;
 import java.util.List;
 
 import brave.Span;
+import brave.Tags;
 import brave.Tracer;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -38,6 +39,8 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+
+import static org.springframework.cloud.sleuth.instrument.multiple.MultipleHopsIntegrationTests.COUNTRY_CODE;
 
 @MessagingGateway(name = "greeter")
 interface Sender {
@@ -73,6 +76,10 @@ public class DemoApplication {
 			@RequestHeader HttpHeaders headers) {
 		this.sender.send(message);
 		this.httpSpan = this.tracer.currentSpan();
+
+		// tag what was propagated
+		Tags.BAGGAGE_FIELD.tag(COUNTRY_CODE, httpSpan);
+
 		return new Greeting(message);
 	}
 

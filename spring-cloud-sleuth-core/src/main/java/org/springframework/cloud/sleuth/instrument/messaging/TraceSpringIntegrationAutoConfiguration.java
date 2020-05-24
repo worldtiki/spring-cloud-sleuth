@@ -40,7 +40,7 @@ import org.springframework.messaging.support.MessageHeaderAccessor;
  * @since 1.0.0
  * @see TracingChannelInterceptor
  */
-@Configuration
+@Configuration(proxyBeanMethods = false)
 @ConditionalOnClass(GlobalChannelInterceptor.class)
 @ConditionalOnBean(Tracing.class)
 @AutoConfigureAfter({ TraceAutoConfiguration.class,
@@ -48,7 +48,7 @@ import org.springframework.messaging.support.MessageHeaderAccessor;
 @OnMessagingEnabled
 @ConditionalOnProperty(value = "spring.sleuth.integration.enabled", matchIfMissing = true)
 @EnableConfigurationProperties(SleuthMessagingProperties.class)
-public class TraceSpringIntegrationAutoConfiguration {
+class TraceSpringIntegrationAutoConfiguration {
 
 	@Bean
 	public GlobalChannelInterceptorWrapper tracingGlobalChannelInterceptorWrapper(

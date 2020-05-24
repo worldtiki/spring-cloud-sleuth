@@ -16,72 +16,110 @@
 
 package org.springframework.cloud.sleuth.instrument.web.client;
 
+import java.net.InetSocketAddress;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
 import java.util.function.BiFunction;
+import java.util.function.Supplier;
 
 import brave.Span;
-import brave.Tracer;
 import brave.http.HttpClientHandler;
 import brave.http.HttpTracing;
-import brave.propagation.Propagation;
 import brave.propagation.TraceContext;
 import io.netty.bootstrap.Bootstrap;
-import io.netty.handler.codec.http.HttpHeaders;
 import reactor.core.publisher.Mono;
 import reactor.netty.Connection;
 import reactor.netty.http.client.HttpClient;
 import reactor.netty.http.client.HttpClientRequest;
 import reactor.netty.http.client.HttpClientResponse;
+import reactor.util.context.Context;
 
 import org.springframework.beans.BeansException;
-import org.springframework.beans.factory.BeanFactory;
 import org.springframework.beans.factory.config.BeanPostProcessor;
+import org.springframework.cloud.sleuth.internal.LazyBean;
+import org.springframework.context.ConfigurableApplicationContext;
+import org.springframework.lang.Nullable;
 
 class HttpClientBeanPostProcessor implements BeanPostProcessor {
 
-	private final BeanFactory beanFactory;
+	final ConfigurableApplicationContext springContext;
 
-	HttpClientBeanPostProcessor(BeanFactory beanFactory) {
-		this.beanFactory = beanFactory;
+	HttpClientBeanPostProcessor(ConfigurableApplicationContext springContext) {
+		this.springContext = springContext;
 	}
 
 	@Override
 	public Object postProcessAfterInitialization(Object bean, String beanName)
 			throws BeansException {
+		LazyBean<HttpTracing> httpTracing = LazyBean.create(this.springContext,
+				HttpTracing.class);
 		if (bean instanceof HttpClient) {
-			return ((HttpClient) bean).mapConnect(new TracingMapConnect(this.beanFactory))
-					.doOnRequest(TracingDoOnRequest.create(this.beanFactory))
-					.doOnRequestError(TracingDoOnErrorRequest.create(this.beanFactory))
-					.doOnResponse(TracingDoOnResponse.create(this.beanFactory))
-					.doOnResponseError(TracingDoOnErrorResponse.create(this.beanFactory));
+			// This adds handlers to manage the span lifecycle. All require explicit
+			// propagation of the current span as a reactor context property.
+			// This done in mapConnect, added last so that it is setup first.
+			// https://projectreactor.io/docs/core/release/reference/#_simple_context_examples
+
+			// In our case, we treat a normal response no differently than one in
+			// preparation of a redirect follow-up.
+			TracingDoOnResponse doOnResponse = new TracingDoOnResponse(httpTracing);
+			return ((HttpClient) bean)
+					.doOnResponseError(new TracingDoOnErrorResponse(httpTracing))
+					.doOnRedirect(doOnResponse).doOnResponse(doOnResponse)
+					.doOnRequestError(new TracingDoOnErrorRequest(httpTracing))
+					.doOnRequest(new TracingDoOnRequest(httpTracing))
+					.mapConnect(new TracingMapConnect(() -> {
+						HttpTracing ref = httpTracing.get();
+						return ref != null ? ref.tracing().currentTraceContext().get()
+								: null;
+					}));
 		}
 		return bean;
 	}
 
-	private static class TracingMapConnect implements
+	/** The current client span, cleared on completion for any reason. */
+	static final class PendingSpan extends AtomicReference<Span> {
+
+	}
+
+	static class TracingMapConnect implements
 			BiFunction<Mono<? extends Connection>, Bootstrap, Mono<? extends Connection>> {
 
-		private final BeanFactory beanFactory;
+		static final Exception CANCELLED_ERROR = new CancellationException("CANCELLED") {
+			@Override
+			public Throwable fillInStackTrace() {
+				return this; // stack trace doesn't add value here
+			}
+		};
 
-		private Tracer tracer;
+		final Supplier<TraceContext> currentTraceContext;
 
-		TracingMapConnect(BeanFactory beanFactory) {
-			this.beanFactory = beanFactory;
+		TracingMapConnect(Supplier<TraceContext> currentTraceContext) {
+			this.currentTraceContext = currentTraceContext;
 		}
 
 		@Override
 		public Mono<? extends Connection> apply(Mono<? extends Connection> mono,
 				Bootstrap bootstrap) {
-			return mono.subscriberContext(context -> context.put(AtomicReference.class,
-					new AtomicReference<>(tracer().currentSpan())));
-		}
-
-		private Tracer tracer() {
-			if (this.tracer == null) {
-				this.tracer = this.beanFactory.getBean(Tracer.class);
-			}
-			return this.tracer;
+			// This function is invoked once per-request. We keep a reference to the
+			// pending client span here, so that only one signal completes the span.
+			PendingSpan pendingSpan = new PendingSpan();
+			return mono.subscriberContext(context -> {
+				TraceContext invocationContext = currentTraceContext.get();
+				if (invocationContext != null) {
+					// Read in this processor and also in ScopePassingSpanSubscriber
+					context = context.put(TraceContext.class, invocationContext);
+				}
+				return context.put(PendingSpan.class, pendingSpan);
+			}).doOnCancel(() -> {
+				// Check to see if Subscription.cancel() happened before another signal,
+				// like onComplete() completed the span (clearing the reference).
+				Span span = pendingSpan.getAndSet(null);
+				if (span != null) {
+					span.error(CANCELLED_ERROR);
+					span.finish();
+				}
+			});
 		}
 
 	}
@@ -89,82 +127,54 @@ class HttpClientBeanPostProcessor implements BeanPostProcessor {
 	private static class TracingDoOnRequest
 			implements BiConsumer<HttpClientRequest, Connection> {
 
-		static final Propagation.Setter<HttpHeaders, String> SETTER = new Propagation.Setter<HttpHeaders, String>() {
-			@Override
-			public void put(HttpHeaders carrier, String key, String value) {
-				if (!carrier.contains(key)) {
-					carrier.add(key, value);
-				}
-			}
+		final LazyBean<HttpTracing> httpTracing;
 
-			@Override
-			public String toString() {
-				return "HttpHeaders::add";
-			}
-		};
+		HttpClientHandler<brave.http.HttpClientRequest, brave.http.HttpClientResponse> handler;
 
-		final BeanFactory beanFactory;
-
-		HttpTracing httpTracing;
-
-		Tracer tracer;
-
-		HttpClientHandler<HttpClientRequest, HttpClientResponse> handler;
-
-		TraceContext.Injector<HttpHeaders> injector;
-
-		Propagation<String> propagation;
-
-		TracingDoOnRequest(BeanFactory beanFactory) {
-			this.beanFactory = beanFactory;
+		TracingDoOnRequest(LazyBean<HttpTracing> httpTracing) {
+			this.httpTracing = httpTracing;
 		}
 
-		static TracingDoOnRequest create(BeanFactory beanFactory) {
-			return new TracingDoOnRequest(beanFactory);
-		}
-
-		private HttpTracing httpTracing() {
-			if (this.httpTracing == null) {
-				this.httpTracing = this.beanFactory.getBean(HttpTracing.class);
-			}
-			return this.httpTracing;
-		}
-
-		private Propagation<String> propagation() {
-			if (this.propagation == null) {
-				this.propagation = httpTracing().tracing().propagation();
-			}
-			return this.propagation;
-		}
-
-		private TraceContext.Injector<HttpHeaders> injector() {
-			if (this.injector == null) {
-				this.injector = propagation().injector(SETTER);
-			}
-			return this.injector;
-		}
-
-		private HttpClientHandler<HttpClientRequest, HttpClientResponse> handler() {
+		HttpClientHandler<brave.http.HttpClientRequest, brave.http.HttpClientResponse> handler() {
 			if (this.handler == null) {
-				this.handler = HttpClientHandler.create(httpTracing(), new HttpAdapter());
+				this.handler = HttpClientHandler.create(httpTracing.get());
 			}
 			return this.handler;
 		}
 
 		@Override
 		public void accept(HttpClientRequest req, Connection connection) {
-			// request already instrumented
-			for (String key : propagation().keys()) {
-				if (req.requestHeaders().contains(key)) {
-					return;
-				}
+			PendingSpan pendingSpan = req.currentContext().getOrDefault(PendingSpan.class,
+					null);
+			if (pendingSpan == null) {
+				return; // Somehow TracingMapConnect was not invoked.. skip out
 			}
-			AtomicReference reference = req.currentContext()
-					.getOrDefault(AtomicReference.class, new AtomicReference());
-			Span span = handler().handleSend(injector(), req.requestHeaders(), req,
-					reference.get() == null ? handler().nextSpan(req)
-							: (Span) reference.get());
-			reference.set(span);
+
+			// All completion hooks clear this reference. If somehow this has a span upon
+			// re-entry, the state model in reactor-netty has changed and we need to
+			// update this code!
+			Span span = pendingSpan.getAndSet(null);
+			if (span != null) {
+				assert false : "span exists when it shouldn't!";
+				span.abandon(); // abandon instead of break
+			}
+
+			// Start a new client span with the appropriate parent
+			TraceContext parent = req.currentContext().getOrDefault(TraceContext.class,
+					null);
+			HttpClientRequestWrapper request = new HttpClientRequestWrapper(req);
+
+			span = handler().handleSendWithParent(request, parent);
+			parseConnectionAddress(connection, span);
+			pendingSpan.set(span);
+		}
+
+		static void parseConnectionAddress(Connection connection, Span span) {
+			if (span.isNoop()) {
+				return;
+			}
+			InetSocketAddress socketAddress = connection.address();
+			span.remoteIpAndPort(socketAddress.getHostString(), socketAddress.getPort());
 		}
 
 	}
@@ -172,17 +182,13 @@ class HttpClientBeanPostProcessor implements BeanPostProcessor {
 	private static class TracingDoOnResponse extends AbstractTracingDoOnHandler
 			implements BiConsumer<HttpClientResponse, Connection> {
 
-		TracingDoOnResponse(BeanFactory beanFactory) {
-			super(beanFactory);
-		}
-
-		static TracingDoOnResponse create(BeanFactory beanFactory) {
-			return new TracingDoOnResponse(beanFactory);
+		TracingDoOnResponse(LazyBean<HttpTracing> httpTracing) {
+			super(httpTracing);
 		}
 
 		@Override
-		public void accept(HttpClientResponse httpClientResponse, Connection connection) {
-			handle(httpClientResponse, null);
+		public void accept(HttpClientResponse response, Connection connection) {
+			handle(response.currentContext(), response, null);
 		}
 
 	}
@@ -190,17 +196,13 @@ class HttpClientBeanPostProcessor implements BeanPostProcessor {
 	private static class TracingDoOnErrorRequest extends AbstractTracingDoOnHandler
 			implements BiConsumer<HttpClientRequest, Throwable> {
 
-		TracingDoOnErrorRequest(BeanFactory beanFactory) {
-			super(beanFactory);
-		}
-
-		static TracingDoOnErrorRequest create(BeanFactory beanFactory) {
-			return new TracingDoOnErrorRequest(beanFactory);
+		TracingDoOnErrorRequest(LazyBean<HttpTracing> httpTracing) {
+			super(httpTracing);
 		}
 
 		@Override
-		public void accept(HttpClientRequest request, Throwable throwable) {
-			handle(null, throwable);
+		public void accept(HttpClientRequest req, Throwable error) {
+			handle(req.currentContext(), null, error);
 		}
 
 	}
@@ -208,85 +210,123 @@ class HttpClientBeanPostProcessor implements BeanPostProcessor {
 	private static class TracingDoOnErrorResponse extends AbstractTracingDoOnHandler
 			implements BiConsumer<HttpClientResponse, Throwable> {
 
-		TracingDoOnErrorResponse(BeanFactory beanFactory) {
-			super(beanFactory);
-		}
-
-		static TracingDoOnErrorResponse create(BeanFactory beanFactory) {
-			return new TracingDoOnErrorResponse(beanFactory);
+		TracingDoOnErrorResponse(LazyBean<HttpTracing> httpTracing) {
+			super(httpTracing);
 		}
 
 		@Override
-		public void accept(HttpClientResponse httpClientResponse, Throwable throwable) {
-			handle(httpClientResponse, throwable);
+		public void accept(HttpClientResponse response, Throwable error) {
+			handle(response.currentContext(), response, error);
 		}
 
 	}
 
 	private static abstract class AbstractTracingDoOnHandler {
 
-		final BeanFactory beanFactory;
+		final LazyBean<HttpTracing> httpTracing;
 
-		HttpTracing httpTracing;
+		HttpClientHandler<brave.http.HttpClientRequest, brave.http.HttpClientResponse> handler;
 
-		HttpClientHandler<HttpClientRequest, HttpClientResponse> handler;
-
-		AbstractTracingDoOnHandler(BeanFactory beanFactory) {
-			this.beanFactory = beanFactory;
+		AbstractTracingDoOnHandler(LazyBean<HttpTracing> httpTracing) {
+			this.httpTracing = httpTracing;
 		}
 
-		private HttpTracing httpTracing() {
-			if (this.httpTracing == null) {
-				this.httpTracing = this.beanFactory.getBean(HttpTracing.class);
-			}
-			return this.httpTracing;
-		}
-
-		private HttpClientHandler<HttpClientRequest, HttpClientResponse> handler() {
+		HttpClientHandler<brave.http.HttpClientRequest, brave.http.HttpClientResponse> handler() {
 			if (this.handler == null) {
-				this.handler = HttpClientHandler.create(httpTracing(), new HttpAdapter());
+				this.handler = HttpClientHandler.create(httpTracing.get());
 			}
 			return this.handler;
 		}
 
-		protected void handle(HttpClientResponse httpClientResponse,
-				Throwable throwable) {
-			if (httpClientResponse == null) {
-				return;
+		void handle(Context context, @Nullable HttpClientResponse resp,
+				@Nullable Throwable error) {
+			PendingSpan pendingSpan = context.getOrDefault(PendingSpan.class, null);
+			if (pendingSpan == null) {
+				return; // Somehow TracingMapConnect was not invoked.. skip out
 			}
-			AtomicReference reference = httpClientResponse.currentContext()
-					.getOrDefault(AtomicReference.class, null);
-			if (reference == null || reference.get() == null) {
-				return;
+
+			Span span = pendingSpan.getAndSet(null);
+			if (span == null) {
+				return; // Unexpected. In the handle method, without a span to finish!
 			}
-			handler().handleReceive(httpClientResponse, throwable,
-					(Span) reference.get());
+			HttpClientResponseWrapper response = resp != null
+					? new HttpClientResponseWrapper(resp) : null;
+			handler().handleReceive(response, error, span);
 		}
 
 	}
 
-	private static class HttpAdapter
-			extends brave.http.HttpClientAdapter<HttpClientRequest, HttpClientResponse> {
+	static final class HttpClientRequestWrapper extends brave.http.HttpClientRequest {
 
-		@Override
-		public String method(HttpClientRequest request) {
-			return request.method().name();
+		final HttpClientRequest delegate;
+
+		HttpClientRequestWrapper(HttpClientRequest delegate) {
+			this.delegate = delegate;
 		}
 
 		@Override
-		public String url(HttpClientRequest request) {
-			return request.uri();
+		public Object unwrap() {
+			return delegate;
 		}
 
 		@Override
-		public String requestHeader(HttpClientRequest request, String name) {
-			Object result = request.requestHeaders().get(name);
-			return result != null ? result.toString() : "";
+		public String method() {
+			return delegate.method().name();
 		}
 
 		@Override
-		public Integer statusCode(HttpClientResponse response) {
-			return response.status().code();
+		public String path() {
+			return delegate.fullPath();
+		}
+
+		@Override
+		public String url() {
+			return delegate.resourceUrl();
+		}
+
+		@Override
+		public String header(String name) {
+			return delegate.requestHeaders().get(name);
+		}
+
+		@Override
+		public void header(String name, String value) {
+			delegate.header(name, value);
+		}
+
+	}
+
+	static final class HttpClientResponseWrapper extends brave.http.HttpClientResponse {
+
+		final HttpClientResponse delegate;
+
+		HttpClientRequestWrapper request;
+
+		HttpClientResponseWrapper(HttpClientResponse delegate) {
+			this.delegate = delegate;
+		}
+
+		@Override
+		public Object unwrap() {
+			return delegate;
+		}
+
+		@Override
+		public HttpClientRequestWrapper request() {
+			if (request == null) {
+				if (delegate instanceof HttpClientRequest) {
+					request = new HttpClientRequestWrapper((HttpClientRequest) delegate);
+				}
+				else {
+					assert false : "We expect the response to be the same reference as the request";
+				}
+			}
+			return request;
+		}
+
+		@Override
+		public int statusCode() {
+			return delegate.status().code();
 		}
 
 	}

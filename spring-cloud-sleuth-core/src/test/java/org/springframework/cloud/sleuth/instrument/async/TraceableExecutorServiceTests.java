@@ -29,68 +29,66 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 import brave.ScopedSpan;
-import brave.Span;
 import brave.Tracer;
 import brave.Tracing;
-import brave.propagation.StrictScopeDecorator;
-import brave.propagation.ThreadLocalCurrentTraceContext;
+import brave.propagation.StrictCurrentTraceContext;
+import brave.propagation.TraceContext;
+import brave.test.TestSpanHandler;
 import org.assertj.core.api.BDDAssertions;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
-import org.junit.runner.RunWith;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentMatcher;
 import org.mockito.BDDMockito;
 import org.mockito.Mock;
 import org.mockito.Mockito;
-import org.mockito.junit.MockitoJUnitRunner;
+import org.mockito.junit.jupiter.MockitoExtension;
 
 import org.springframework.beans.factory.BeanFactory;
-import org.springframework.cloud.sleuth.DefaultSpanNamer;
 import org.springframework.cloud.sleuth.SpanNamer;
-import org.springframework.cloud.sleuth.util.ArrayListSpanReporter;
+import org.springframework.cloud.sleuth.internal.DefaultSpanNamer;
 
 import static java.util.stream.Collectors.toList;
 import static org.assertj.core.api.BDDAssertions.then;
 
-@RunWith(MockitoJUnitRunner.class)
+@ExtendWith(MockitoExtension.class)
 public class TraceableExecutorServiceTests {
 
 	private static int TOTAL_THREADS = 10;
 
-	@Mock
+	@Mock(lenient = true)
 	BeanFactory beanFactory;
 
 	ExecutorService executorService = Executors.newFixedThreadPool(3);
 
 	ExecutorService traceManagerableExecutorService;
 
-	ArrayListSpanReporter reporter = new ArrayListSpanReporter();
+	StrictCurrentTraceContext currentTraceContext = StrictCurrentTraceContext.create();
 
-	Tracing tracing = Tracing.newBuilder()
-			.currentTraceContext(ThreadLocalCurrentTraceContext.newBuilder()
-					.addScopeDecorator(StrictScopeDecorator.create()).build())
-			.spanReporter(this.reporter).build();
+	TestSpanHandler spans = new TestSpanHandler();
+
+	Tracing tracing = Tracing.newBuilder().currentTraceContext(this.currentTraceContext)
+			.addSpanHandler(this.spans).build();
 
 	Tracer tracer = this.tracing.tracer();
 
 	SpanVerifyingRunnable spanVerifyingRunnable = new SpanVerifyingRunnable();
 
-	@Before
+	@BeforeEach
 	public void setup() {
 		this.traceManagerableExecutorService = new TraceableExecutorService(
 				beanFactory(true), this.executorService);
-		this.reporter.clear();
+		this.spans.clear();
 		this.spanVerifyingRunnable.clear();
 	}
 
-	@After
-	public void tearDown() throws Exception {
+	@AfterEach
+	public void tearDown() {
 		this.traceManagerableExecutorService.shutdown();
 		this.executorService.shutdown();
-		if (Tracing.current() != null) {
-			Tracing.current().close();
-		}
+		this.tracing.close();
+		this.currentTraceContext.close();
 	}
 
 	@Test
@@ -232,7 +230,7 @@ public class TraceableExecutorServiceTests {
 				.willReturn(this.tracing);
 		BDDMockito.given(this.beanFactory.getBean(SpanNamer.class))
 				.willReturn(new DefaultSpanNamer());
-		ContextRefreshedListenerAccessor.set(this.beanFactory, refreshed);
+		SleuthContextListenerAccessor.set(this.beanFactory, refreshed);
 		return this.beanFactory;
 	}
 
@@ -244,9 +242,9 @@ public class TraceableExecutorServiceTests {
 
 		@Override
 		public void run() {
-			Span span = Tracing.currentTracer().currentSpan();
-			this.traceIds.add(span.context().traceId());
-			this.spanIds.add(span.context().spanId());
+			TraceContext context = currentTraceContext.get();
+			this.traceIds.add(context.traceId());
+			this.spanIds.add(context.spanId());
 		}
 
 		void clear() {

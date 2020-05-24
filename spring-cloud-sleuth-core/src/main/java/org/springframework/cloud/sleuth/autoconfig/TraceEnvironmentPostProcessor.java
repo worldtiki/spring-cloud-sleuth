@@ -27,16 +27,14 @@ import org.springframework.core.env.MutablePropertySources;
 import org.springframework.core.env.PropertySource;
 
 /**
- * Adds default properties for the application:
- * <ul>
- * <li>logging pattern level that prints trace information (e.g. trace ids)</li>
- * </ul>
+ * Adds default properties for the application: logging pattern level that prints trace
+ * information (e.g. trace ids).
  *
  * @author Dave Syer
  * @author Marcin Grzejszczak
  * @since 2.0.0
  */
-public class TraceEnvironmentPostProcessor implements EnvironmentPostProcessor {
+class TraceEnvironmentPostProcessor implements EnvironmentPostProcessor {
 
 	private static final String PROPERTY_SOURCE_NAME = "defaultProperties";
 
@@ -49,7 +47,7 @@ public class TraceEnvironmentPostProcessor implements EnvironmentPostProcessor {
 		if (Boolean
 				.parseBoolean(environment.getProperty("spring.sleuth.enabled", "true"))) {
 			map.put("logging.pattern.level", "%5p [${spring.zipkin.service.name:"
-					+ "${spring.application.name:}},%X{X-B3-TraceId:-},%X{X-B3-SpanId:-},%X{X-Span-Export:-}]");
+					+ "${spring.application.name:}},%X{traceId:-},%X{spanId:-}]");
 		}
 		addOrReplace(environment.getPropertySources(), map);
 	}

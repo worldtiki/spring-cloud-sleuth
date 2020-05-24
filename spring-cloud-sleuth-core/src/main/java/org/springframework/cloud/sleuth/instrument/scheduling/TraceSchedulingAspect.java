@@ -25,7 +25,8 @@ import org.aspectj.lang.ProceedingJoinPoint;
 import org.aspectj.lang.annotation.Around;
 import org.aspectj.lang.annotation.Aspect;
 
-import org.springframework.cloud.sleuth.util.SpanNameUtil;
+import org.springframework.cloud.sleuth.internal.SpanNameUtil;
+import org.springframework.lang.Nullable;
 
 /**
  * Aspect that creates a new Span for running threads executing methods annotated with
@@ -42,7 +43,7 @@ import org.springframework.cloud.sleuth.util.SpanNameUtil;
  * @see Tracing
  */
 @Aspect
-public class TraceSchedulingAspect {
+class TraceSchedulingAspect {
 
 	private static final String CLASS_KEY = "class";
 
@@ -50,16 +51,18 @@ public class TraceSchedulingAspect {
 
 	private final Tracer tracer;
 
+	@Nullable
 	private final Pattern skipPattern;
 
-	public TraceSchedulingAspect(Tracer tracer, Pattern skipPattern) {
+	TraceSchedulingAspect(Tracer tracer, Pattern skipPattern) {
 		this.tracer = tracer;
 		this.skipPattern = skipPattern;
 	}
 
 	@Around("execution (@org.springframework.scheduling.annotation.Scheduled  * *.*(..))")
 	public Object traceBackgroundThread(final ProceedingJoinPoint pjp) throws Throwable {
-		if (this.skipPattern.matcher(pjp.getTarget().getClass().getName()).matches()) {
+		if (this.skipPattern != null && this.skipPattern
+				.matcher(pjp.getTarget().getClass().getName()).matches()) {
 			// we might have a span in context due to wrapping of runnables
 			// we want to clear that context
 			this.tracer.withSpanInScope(null);

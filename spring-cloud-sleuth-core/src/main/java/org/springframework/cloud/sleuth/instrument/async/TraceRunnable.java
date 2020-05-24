@@ -31,6 +31,7 @@ import org.springframework.cloud.sleuth.SpanNamer;
  * @author Marcin Grzejszczak
  * @since 1.0.0
  */
+// public as most types in this package were documented for use
 public class TraceRunnable implements Runnable {
 
 	/**

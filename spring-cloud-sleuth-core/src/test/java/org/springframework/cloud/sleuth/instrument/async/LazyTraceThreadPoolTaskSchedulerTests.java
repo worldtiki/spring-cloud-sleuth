@@ -24,31 +24,31 @@ import java.util.concurrent.RejectedExecutionHandler;
 import java.util.concurrent.ThreadFactory;
 
 import brave.Tracing;
-import brave.propagation.StrictScopeDecorator;
-import brave.propagation.ThreadLocalCurrentTraceContext;
-import org.junit.Before;
-import org.junit.Test;
-import org.junit.runner.RunWith;
+import brave.propagation.StrictCurrentTraceContext;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.BDDMockito;
 import org.mockito.Mock;
-import org.mockito.junit.MockitoJUnitRunner;
+import org.mockito.junit.jupiter.MockitoExtension;
 
 import org.springframework.beans.factory.BeanFactory;
-import org.springframework.cloud.sleuth.DefaultSpanNamer;
 import org.springframework.cloud.sleuth.SpanNamer;
+import org.springframework.cloud.sleuth.internal.DefaultSpanNamer;
 import org.springframework.scheduling.Trigger;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 import org.springframework.util.ErrorHandler;
 
-@RunWith(MockitoJUnitRunner.class)
+@ExtendWith(MockitoExtension.class)
 public class LazyTraceThreadPoolTaskSchedulerTests {
 
-	Tracing tracing = Tracing.newBuilder()
-			.currentTraceContext(ThreadLocalCurrentTraceContext.newBuilder()
-					.addScopeDecorator(StrictScopeDecorator.create()).build())
+	StrictCurrentTraceContext currentTraceContext = StrictCurrentTraceContext.create();
+
+	Tracing tracing = Tracing.newBuilder().currentTraceContext(currentTraceContext)
 			.build();
 
-	@Mock
+	@Mock(lenient = true)
 	BeanFactory beanFactory;
 
 	@Mock
@@ -56,10 +56,17 @@ public class LazyTraceThreadPoolTaskSchedulerTests {
 
 	LazyTraceThreadPoolTaskScheduler executor;
 
-	@Before
+	@BeforeEach
 	public void setup() {
 		this.executor = new LazyTraceThreadPoolTaskScheduler(beanFactory(),
 				this.delegate);
+	}
+
+	@AfterEach
+	public void close() {
+		this.executor.shutdown();
+		this.tracing.close();
+		this.currentTraceContext.close();
 	}
 
 	BeanFactory beanFactory() {
@@ -67,7 +74,7 @@ public class LazyTraceThreadPoolTaskSchedulerTests {
 				.willReturn(this.tracing);
 		BDDMockito.given(this.beanFactory.getBean(SpanNamer.class))
 				.willReturn(new DefaultSpanNamer());
-		ContextRefreshedListenerAccessor.set(this.beanFactory, true);
+		SleuthContextListenerAccessor.set(this.beanFactory, true);
 		return this.beanFactory;
 	}
 
@@ -128,7 +135,8 @@ public class LazyTraceThreadPoolTaskSchedulerTests {
 		};
 		this.executor.execute(r);
 
-		BDDMockito.then(this.delegate).should().execute(r);
+		BDDMockito.then(this.delegate).should()
+				.execute(BDDMockito.any(TraceRunnable.class));
 	}
 
 	@Test

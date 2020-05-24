@@ -15,7 +15,7 @@
   ~ limitations under the License.
   -->
 
-<project xmlns:xsi="https://www.w3.org/2001/XMLSchema-instance"
+<project xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
 		 xmlns="http://maven.apache.org/POM/4.0.0"
 		 xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
 	<modelVersion>4.0.0</modelVersion>
@@ -24,11 +24,14 @@
 	<packaging>jar</packaging>
 	<name>Spring Cloud Sleuth Core</name>
 	<description>Spring Cloud Sleuth Core</description>
+	<properties>
+		<spring-security-oauth2.version>2.2.0.RELEASE</spring-security-oauth2.version>
+	</properties>
 
 	<parent>
 		<groupId>org.springframework.cloud</groupId>
 		<artifactId>spring-cloud-sleuth</artifactId>
-		<version>2.2.0.BUILD-SNAPSHOT</version>
+		<version>3.0.0-SNAPSHOT</version>
 		<relativePath>..</relativePath>
 	</parent>
 
@@ -84,29 +87,18 @@
 		</dependency>
 		<dependency>
 			<groupId>org.springframework.cloud</groupId>
-			<artifactId>spring-cloud-aws-messaging</artifactId>
+			<artifactId>spring-cloud-starter-gateway</artifactId>
 			<optional>true</optional>
 		</dependency>
 		<dependency>
 			<groupId>org.springframework.cloud</groupId>
-			<artifactId>spring-cloud-starter-gateway</artifactId>
+			<artifactId>spring-cloud-starter-circuitbreaker-resilience4j</artifactId>
 			<optional>true</optional>
 		</dependency>
 		<dependency>
 			<groupId>org.springframework.cloud</groupId>
 			<artifactId>spring-cloud-starter-openfeign</artifactId>
 			<optional>true</optional>
-		</dependency>
-		<dependency>
-			<groupId>org.springframework.cloud</groupId>
-			<artifactId>spring-cloud-starter-netflix-zuul</artifactId>
-			<optional>true</optional>
-			<exclusions>
-				<exclusion>
-					<groupId>com.google.guava</groupId>
-					<artifactId>guava</artifactId>
-				</exclusion>
-			</exclusions>
 		</dependency>
 		<dependency>
 			<groupId>org.springframework.integration</groupId>
@@ -131,7 +123,7 @@
 		<dependency>
 			<groupId>org.springframework.security.oauth</groupId>
 			<artifactId>spring-security-oauth2</artifactId>
-			<version>2.2.0.RELEASE</version>
+			<version>${spring-security-oauth2.version}</version>
 			<optional>true</optional>
 		</dependency>
 		<dependency>
@@ -149,8 +141,8 @@
 			<optional>true</optional>
 		</dependency>
 		<dependency>
-			<groupId>com.netflix.hystrix</groupId>
-			<artifactId>hystrix-core</artifactId>
+			<groupId>org.springframework.cloud</groupId>
+			<artifactId>spring-cloud-starter-loadbalancer</artifactId>
 			<optional>true</optional>
 		</dependency>
 		<dependency>
@@ -162,17 +154,6 @@
 			<groupId>io.github.openfeign.form</groupId>
 			<artifactId>feign-form-spring</artifactId>
 			<optional>true</optional>
-		</dependency>
-		<dependency>
-			<groupId>com.netflix.zuul</groupId>
-			<artifactId>zuul-core</artifactId>
-			<optional>true</optional>
-			<exclusions>
-				<exclusion>
-					<groupId>com.google.guava</groupId>
-					<artifactId>guava</artifactId>
-				</exclusion>
-			</exclusions>
 		</dependency>
 		<dependency>
 			<groupId>io.reactivex</groupId>
@@ -203,10 +184,24 @@
 		<dependency>
 			<groupId>io.zipkin.brave</groupId>
 			<artifactId>brave</artifactId>
+			<exclusions>
+				<exclusion>
+					<groupId>io.zipkin.reporter2</groupId>
+					<artifactId>*</artifactId>
+				</exclusion>
+				<exclusion>
+					<groupId>io.zipkin.zipkin2</groupId>
+					<artifactId>*</artifactId>
+				</exclusion>
+			</exclusions>
 		</dependency>
 		<dependency>
 			<groupId>io.zipkin.brave</groupId>
-			<artifactId>brave-context-log4j2</artifactId>
+			<artifactId>brave-context-slf4j</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>io.zipkin.brave</groupId>
+			<artifactId>brave-instrumentation-messaging</artifactId>
 		</dependency>
 		<dependency>
 			<groupId>io.zipkin.brave</groupId>
@@ -286,40 +281,43 @@
 			<artifactId>brave-instrumentation-grpc</artifactId>
 			<optional>true</optional>
 		</dependency>
+		<dependency>
+			<groupId>io.zipkin.reporter2</groupId>
+			<artifactId>zipkin-reporter-metrics-micrometer</artifactId>
+			<exclusions>
+				<exclusion>
+					<groupId>io.micrometer</groupId>
+					<artifactId>micrometer-core</artifactId>
+				</exclusion>
+			</exclusions>
+		</dependency>
 		<!-- Instrumentation of Lettuce -->
 		<dependency>
 			<groupId>io.lettuce</groupId>
 			<artifactId>lettuce-core</artifactId>
 			<optional>true</optional>
 		</dependency>
-
 		<!-- For Instrumentation of Quartz -->
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-quartz</artifactId>
 			<optional>true</optional>
 		</dependency>
-
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-autoconfigure-processor</artifactId>
 			<optional>true</optional>
 		</dependency>
+
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-test</artifactId>
 			<scope>test</scope>
 		</dependency>
 		<dependency>
-			<groupId>com.netflix.archaius</groupId>
-			<artifactId>archaius-core</artifactId>
+			<groupId>io.zipkin.brave</groupId>
+			<artifactId>brave-instrumentation-http-tests</artifactId>
 			<scope>test</scope>
-			<exclusions>
-				<exclusion>
-					<groupId>com.google.guava</groupId>
-					<artifactId>guava</artifactId>
-				</exclusion>
-			</exclusions>
 		</dependency>
 		<dependency>
 			<groupId>com.squareup.okhttp3</groupId>
@@ -338,11 +336,6 @@
 			<scope>test</scope>
 		</dependency>
 		<dependency>
-			<groupId>pl.pragmatists</groupId>
-			<artifactId>JUnitParams</artifactId>
-			<scope>test</scope>
-		</dependency>
-		<dependency>
 			<groupId>org.springframework.cloud</groupId>
 			<artifactId>spring-cloud-starter-netflix-eureka-client</artifactId>
 			<scope>test</scope>
@@ -358,7 +351,6 @@
 			<build>
 				<plugins>
 					<plugin>
-						<groupId>org.apache.maven.plugins</groupId>
 						<artifactId>maven-surefire-plugin</artifactId>
 						<configuration>
 							<forkCount>4</forkCount>

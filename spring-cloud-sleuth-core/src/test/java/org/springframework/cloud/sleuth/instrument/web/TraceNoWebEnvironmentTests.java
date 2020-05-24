@@ -16,13 +16,12 @@
 
 package org.springframework.cloud.sleuth.instrument.web;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import org.springframework.beans.factory.NoSuchBeanDefinitionException;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.WebApplicationType;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
-import org.springframework.cloud.client.circuitbreaker.EnableCircuitBreaker;
 import org.springframework.cloud.openfeign.EnableFeignClients;
 import org.springframework.cloud.openfeign.FeignClient;
 import org.springframework.context.ConfigurableApplicationContext;
@@ -56,7 +55,6 @@ public class TraceNoWebEnvironmentTests {
 	@Configuration
 	@EnableAutoConfiguration
 	@EnableFeignClients(clients = Config.SomeFeignClient.class)
-	@EnableCircuitBreaker
 	public static class Config {
 
 		@FeignClient(name = "google", url = "https://www.google.com/")

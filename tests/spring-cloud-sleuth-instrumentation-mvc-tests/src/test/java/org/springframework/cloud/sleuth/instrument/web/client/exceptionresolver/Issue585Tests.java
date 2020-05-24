@@ -22,10 +22,12 @@ import javax.servlet.http.HttpServletRequest;
 
 import brave.Span;
 import brave.Tracing;
+import brave.handler.SpanHandler;
+import brave.propagation.CurrentTraceContext;
 import brave.sampler.Sampler;
+import brave.test.TestSpanHandler;
 import com.fasterxml.jackson.annotation.JsonInclude;
-import org.junit.Test;
-import org.junit.runner.RunWith;
+import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -34,11 +36,9 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.client.TestRestTemplate;
 import org.springframework.boot.web.server.LocalServerPort;
-import org.springframework.cloud.sleuth.util.ArrayListSpanReporter;
 import org.springframework.context.annotation.Bean;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-import org.springframework.test.context.junit4.SpringRunner;
 import org.springframework.web.bind.annotation.ControllerAdvice;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -49,7 +49,6 @@ import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExcep
 
 import static org.assertj.core.api.BDDAssertions.then;
 
-@RunWith(SpringRunner.class)
 @SpringBootTest(classes = TestConfig.class,
 		webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 public class Issue585Tests {
@@ -57,7 +56,10 @@ public class Issue585Tests {
 	TestRestTemplate testRestTemplate = new TestRestTemplate();
 
 	@Autowired
-	ArrayListSpanReporter reporter;
+	CurrentTraceContext currentTraceContext;
+
+	@Autowired
+	TestSpanHandler spans;
 
 	@LocalServerPort
 	int port;
@@ -68,9 +70,9 @@ public class Issue585Tests {
 				"http://localhost:" + this.port + "/sleuthtest?greeting=foo",
 				String.class);
 
-		then(Tracing.current().tracer().currentSpan()).isNull();
+		then(this.currentTraceContext.get()).isNull();
 		then(entity.getStatusCode().value()).isEqualTo(500);
-		then(this.reporter.getSpans().get(0).tags()).containsEntry("custom", "tag")
+		then(this.spans.get(0).tags()).containsEntry("custom", "tag")
 				.containsKeys("error");
 	}
 
@@ -80,8 +82,8 @@ public class Issue585Tests {
 class TestConfig {
 
 	@Bean
-	ArrayListSpanReporter testSpanReporter() {
-		return new ArrayListSpanReporter();
+	SpanHandler testSpanHandler() {
+		return new TestSpanHandler();
 	}
 
 	@Bean

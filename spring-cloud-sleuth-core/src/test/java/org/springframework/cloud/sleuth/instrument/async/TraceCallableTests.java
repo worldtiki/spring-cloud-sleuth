@@ -23,38 +23,38 @@ import java.util.concurrent.Executors;
 import brave.Span;
 import brave.Tracer;
 import brave.Tracing;
-import brave.propagation.StrictScopeDecorator;
-import brave.propagation.ThreadLocalCurrentTraceContext;
-import org.junit.After;
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.mockito.junit.MockitoJUnitRunner;
+import brave.propagation.StrictCurrentTraceContext;
+import brave.test.TestSpanHandler;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.junit.jupiter.MockitoExtension;
 
-import org.springframework.cloud.sleuth.DefaultSpanNamer;
 import org.springframework.cloud.sleuth.SpanName;
-import org.springframework.cloud.sleuth.util.ArrayListSpanReporter;
+import org.springframework.cloud.sleuth.internal.DefaultSpanNamer;
 
 import static org.assertj.core.api.BDDAssertions.then;
 
-@RunWith(MockitoJUnitRunner.class)
+@ExtendWith(MockitoExtension.class)
 public class TraceCallableTests {
 
 	ExecutorService executor = Executors.newSingleThreadExecutor();
 
-	ArrayListSpanReporter reporter = new ArrayListSpanReporter();
+	StrictCurrentTraceContext currentTraceContext = StrictCurrentTraceContext.create();
 
-	Tracing tracing = Tracing.newBuilder()
-			.currentTraceContext(ThreadLocalCurrentTraceContext.newBuilder()
-					.addScopeDecorator(StrictScopeDecorator.create()).build())
-			.spanReporter(this.reporter).build();
+	TestSpanHandler spans = new TestSpanHandler();
+
+	Tracing tracing = Tracing.newBuilder().currentTraceContext(this.currentTraceContext)
+			.addSpanHandler(this.spans).build();
 
 	Tracer tracer = this.tracing.tracer();
 
-	@After
+	@AfterEach
 	public void clean() {
-		this.tracing.close();
-		this.reporter.clear();
 		this.executor.shutdown();
+		this.tracing.close();
+		this.spans.clear();
+		this.currentTraceContext.close();
 	}
 
 	@Test
@@ -98,9 +98,8 @@ public class TraceCallableTests {
 	public void should_take_name_of_span_from_span_name_annotation() throws Exception {
 		whenATraceKeepingCallableGetsSubmitted();
 
-		then(this.reporter.getSpans()).hasSize(1);
-		then(this.reporter.getSpans().get(0).name())
-				.isEqualTo("some-callable-name-from-annotation");
+		then(this.spans).hasSize(1);
+		then(this.spans.get(0).name()).isEqualTo("some-callable-name-from-annotation");
 	}
 
 	@Test
@@ -108,9 +107,8 @@ public class TraceCallableTests {
 			throws Exception {
 		whenCallableGetsSubmitted(thatRetrievesTraceFromThreadLocal());
 
-		then(this.reporter.getSpans()).hasSize(1);
-		then(this.reporter.getSpans().get(0).name())
-				.isEqualTo("some-callable-name-from-to-string");
+		then(this.spans).hasSize(1);
+		then(this.spans.get(0).name()).isEqualTo("some-callable-name-from-to-string");
 	}
 
 	private Callable<Span> thatRetrievesTraceFromThreadLocal() {

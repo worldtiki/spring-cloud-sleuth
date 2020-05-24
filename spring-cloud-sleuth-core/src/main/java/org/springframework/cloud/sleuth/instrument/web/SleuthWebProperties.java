@@ -26,7 +26,7 @@ import org.springframework.boot.context.properties.NestedConfigurationProperty;
  * @since 1.0.12
  */
 @ConfigurationProperties("spring.sleuth.web")
-public class SleuthWebProperties {
+class SleuthWebProperties {
 
 	/**
 	 * Default set of skip patterns.
@@ -57,20 +57,8 @@ public class SleuthWebProperties {
 	private int filterOrder = TraceHttpAutoConfiguration.TRACING_FILTER_ORDER;
 
 	/**
-	 * Flag to toggle the presence of a filter that logs thrown exceptions.
-	 * @deprecated use {@link #exceptionLoggingFilterEnabled}
-	 */
-	@Deprecated
-	private boolean exceptionThrowingFilterEnabled = true;
-
-	/**
-	 * Flag to toggle the presence of a filter that logs thrown exceptions.
-	 */
-	private boolean exceptionLoggingFilterEnabled = true;
-
-	/**
 	 * If set to true, auto-configured skip patterns will be ignored.
-	 * @see TraceWebAutoConfiguration
+	 * @see SkipPatternConfiguration
 	 */
 	private boolean ignoreAutoConfiguredSkipPatterns = false;
 
@@ -96,7 +84,7 @@ public class SleuthWebProperties {
 	}
 
 	public void setSkipPattern(String skipPattern) {
-		this.skipPattern = skipPattern;
+		this.skipPattern = emptyToNull(skipPattern);
 	}
 
 	public String getAdditionalSkipPattern() {
@@ -104,7 +92,7 @@ public class SleuthWebProperties {
 	}
 
 	public void setAdditionalSkipPattern(String additionalSkipPattern) {
-		this.additionalSkipPattern = additionalSkipPattern;
+		this.additionalSkipPattern = emptyToNull(additionalSkipPattern);
 	}
 
 	public int getFilterOrder() {
@@ -113,23 +101,6 @@ public class SleuthWebProperties {
 
 	public void setFilterOrder(int filterOrder) {
 		this.filterOrder = filterOrder;
-	}
-
-	public boolean isExceptionThrowingFilterEnabled() {
-		return this.exceptionThrowingFilterEnabled;
-	}
-
-	public void setExceptionThrowingFilterEnabled(
-			boolean exceptionThrowingFilterEnabled) {
-		this.exceptionThrowingFilterEnabled = exceptionThrowingFilterEnabled;
-	}
-
-	public boolean isExceptionLoggingFilterEnabled() {
-		return this.exceptionLoggingFilterEnabled;
-	}
-
-	public void setExceptionLoggingFilterEnabled(boolean exceptionLoggingFilterEnabled) {
-		this.exceptionLoggingFilterEnabled = exceptionLoggingFilterEnabled;
 	}
 
 	public boolean isIgnoreAutoConfiguredSkipPatterns() {
@@ -149,6 +120,13 @@ public class SleuthWebProperties {
 		this.client = client;
 	}
 
+	static String emptyToNull(String skipPattern) {
+		if (skipPattern != null && skipPattern.isEmpty()) {
+			skipPattern = null; // otherwise this would skip paths named ""!
+		}
+		return skipPattern;
+	}
+
 	/**
 	 * Web client properties.
 	 *
@@ -159,7 +137,7 @@ public class SleuthWebProperties {
 		/**
 		 * Pattern for URLs that should be skipped in client side tracing.
 		 */
-		private String skipPattern = "";
+		private String skipPattern;
 
 		/**
 		 * Enable interceptor injecting into
@@ -180,7 +158,7 @@ public class SleuthWebProperties {
 		}
 
 		public void setSkipPattern(String skipPattern) {
-			this.skipPattern = skipPattern;
+			this.skipPattern = emptyToNull(skipPattern);
 		}
 
 	}
